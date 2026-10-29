@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#071a1d">
+  <meta name="description" content="心之所向——一座可以从上帝视角漫游并写下简述的私人游乐园。">
+  <title>心 · 夜游</title>
+  <link rel="stylesheet" href="styles.css?v=20261029-10">
+</head>
+<body>
+  <div class="app-shell" id="appShell">
+    <div class="film-grain" aria-hidden="true"></div>
+    <div class="fog fog-a" aria-hidden="true"></div>
+    <div class="fog fog-b" aria-hidden="true"></div>
+    <div class="weather-surface" id="weatherSurface" aria-hidden="true"></div>
+
+    <header class="site-header" id="siteHeader">
+      <button type="button" class="brand" id="brandButton" aria-label="布置乐园">
+        <span class="brand-emblem" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i>
+        </span>
+        <span class="brand-copy">
+          <strong id="headerParkName">心</strong>
+          <small id="periodLabel">STAR ISLE · AFTER HOURS</small>
+        </span>
+      </button>
+
+      <div class="header-center">
+        <button type="button" class="weather-status" id="weatherButton" aria-haspopup="dialog">
+          <span class="weather-time" id="localWeatherTime">--:--</span>
+          <span class="weather-divider" aria-hidden="true"></span>
+          <span class="weather-symbol" id="weatherSymbol" aria-hidden="true">◌</span>
+          <span class="weather-place" id="weatherPlace">同步天气</span>
+          <span class="weather-reading" id="weatherReading">--°</span>
+        </button>
+        <div class="darkness-control">
+          <label for="darknessSlider" class="darkness-label">
+            <span class="moon-mark" aria-hidden="true">◐</span>
+            暗度
+          </label>
+          <input
+            id="darknessSlider"
+            class="darkness-slider"
+            type="range"
+            min="0"
+            max="100"
+            step="1"
+            value="58"
+            aria-label="调节画面暗度"
+          >
+          <output id="darknessValue" for="darknessSlider">58%</output>
+        </div>
+      </div>
+
+      <nav class="header-actions" aria-label="乐园操作">
+        <button type="button" class="header-button" id="journalButton">
+          园长手记
+          <span class="nav-count" id="journalCount" aria-label="0 条简述">0</span>
+        </button>
+        <button type="button" class="header-button primary" id="decorateButton">
+          布置乐园
+        </button>
+      </nav>
+    </header>
+
+    <main class="overview-view" id="overviewView">
+      <section class="park-map" aria-label="游乐园全园地图">
+        <svg
+          class="terrain"
+          viewBox="0 0 1600 900"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <defs>
+            <linearGradient id="land" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#2a453d"/>
+              <stop offset=".58" stop-color="#203b35"/>
+              <stop offset="1" stop-color="#172f2d"/>
+            </linearGradient>
+            <linearGradient id="lake" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#18393e"/>
+              <stop offset="1" stop-color="#0b252c"/>
+            </linearGradient>
+            <linearGradient id="stone" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#7d7667"/>
+              <stop offset="1" stop-color="#56584f"/>
+            </linearGradient>
+            <radialGradient id="moonwash">
+              <stop offset="0" stop-color="#d7c89e" stop-opacity=".22"/>
+              <stop offset="1" stop-color="#d7c89e" stop-opacity="0"/>
+            </radialGradient>
+            <filter id="soft-blur">
+              <feGaussianBlur stdDeviation="13"/>
+            </filter>
+            <pattern id="ground-grain" width="54" height="54" patternUnits="userSpaceOnUse">
+              <circle cx="9" cy="13" r=".85" fill="#c4d2bc" opacity=".11"/>
+              <circle cx="34" cy="30" r=".65" fill="#d0dbc5" opacity=".1"/>
+              <path d="M18 39l2-4 2 4M46 7l1.5-3 1.5 3" fill="none" stroke="#899f8e" stroke-width=".7" opacity=".12"/>
+            </pattern>
+          </defs>
+
+          <rect width="1600" height="900" fill="#0b2325"/>
+          <path
+            d="M109 213C208 81 438 47 623 80C802 112 995 49 1248 105C1430 145 1529 291 1497 463C1466 633 1368 783 1174 835C989 885 829 808 648 834C435 863 221 821 121 681C31 556 41 311 109 213Z"
+            fill="url(#land)"
+          />
+          <path
+            d="M109 213C208 81 438 47 623 80C802 112 995 49 1248 105C1430 145 1529 291 1497 463C1466 633 1368 783 1174 835C989 885 829 808 648 834C435 863 221 821 121 681C31 556 41 311 109 213Z"
+            fill="url(#ground-grain)"
+          />
+          <ellipse cx="792" cy="531" rx="330" ry="244" fill="url(#moonwash)"/>
+
+          <g filter="url(#soft-blur)" opacity=".46" fill="#b7c4b4">
+            <ellipse cx="271" cy="469" rx="178" ry="25"/>
+            <ellipse cx="1140" cy="371" rx="214" ry="23"/>
+            <ellipse cx="741" cy="756" rx="226" ry="29"/>
+          </g>
+
+          <g fill="none" stroke-linecap="round">
+            <path d="M800 888C782 782 781 712 800 641" stroke="#101e20" stroke-width="44" opacity=".3"/>
+            <path d="M800 888C782 782 781 712 800 641" stroke="url(#stone)" stroke-width="30"/>
+            <path d="M800 641C620 588 474 492 352 341" stroke="#101e20" stroke-width="38" opacity=".28"/>
+            <path d="M800 641C620 588 474 492 352 341" stroke="url(#stone)" stroke-width="24"/>
+            <path d="M800 641C958 575 1079 486 1182 311" stroke="#101e20" stroke-width="38" opacity=".27"/>
+            <path d="M800 641C958 575 1079 486 1182 311" stroke="url(#stone)" stroke-width="24"/>
+            <path d="M800 641C631 683 494 733 347 785" stroke="#101e20" stroke-width="35" opacity=".28"/>
+            <path d="M800 641C631 683 494 733 347 785" stroke="url(#stone)" stroke-width="22"/>
+            <path d="M800 641C969 666 1129 701 1268 783" stroke="#101e20" stroke-width="35" opacity=".28"/>
+            <path d="M800 641C969 666 1129 701 1268 783" stroke="url(#stone)" stroke-width="22"/>
+            <path d="M800 641C938 612 1060 577 1175 530" stroke="#101e20" stroke-width="31" opacity=".27"/>
+            <path d="M800 641C938 612 1060 577 1175 530" stroke="url(#stone)" stroke-width="19"/>
+          </g>
+
+          <ellipse cx="800" cy="635" rx="202" ry="120" fill="#111f20" opacity=".3"/>
+          <ellipse cx="800" cy="627" rx="190" ry="112" fill="#6e6a5c"/>
+          <ellipse cx="800" cy="619" rx="169" ry="96" fill="#7b7565"/>
+          <ellipse cx="800" cy="616" rx="148" ry="83" fill="none" stroke="#a09177" stroke-width="1.4" stroke-dasharray="4 9" opacity=".65"/>
+          <path d="M714 606h172M747 559l107 113M855 559L748 672" stroke="#9d9077" stroke-width="1.2" opacity=".62"/>
+
+          <path d="M115 713C124 643 183 616 251 629C327 644 357 705 326 763C289 835 183 838 127 790C103 770 105 747 115 713Z" fill="url(#lake)"/>
+          <path d="M143 714C179 672 237 674 280 703" fill="none" stroke="#89a2aa" stroke-width="1.2" opacity=".32"/>
+          <path d="M162 783C205 765 255 776 291 805" fill="none" stroke="#7f9ba1" stroke-width="1" opacity=".23"/>
+          <g stroke="#89978a" stroke-width="1.4" fill="none" opacity=".58">
+            <path d="M131 720Q142 684 153 664M140 717Q156 692 172 677M307 765Q323 744 338 726"/>
+            <path d="M362 661Q385 630 404 632Q423 634 435 670"/>
+          </g>
+
+          <g fill="#122a27" opacity=".9">
+            <ellipse cx="172" cy="269" rx="28" ry="20"/><ellipse cx="211" cy="241" rx="22" ry="16"/>
+            <ellipse cx="233" cy="288" rx="18" ry="13"/><ellipse cx="525" cy="168" rx="25" ry="18"/>
+            <ellipse cx="561" cy="189" rx="17" ry="12"/><ellipse cx="1000" cy="132" rx="27" ry="18"/>
+            <ellipse cx="1040" cy="159" rx="18" ry="13"/><ellipse cx="1395" cy="258" rx="26" ry="17"/>
+            <ellipse cx="1427" cy="291" rx="17" ry="12"/><ellipse cx="1417" cy="580" rx="25" ry="17"/>
+            <ellipse cx="1388" cy="616" rx="17" ry="12"/><ellipse cx="524" cy="777" rx="24" ry="16"/>
+            <ellipse cx="559" cy="795" rx="17" ry="12"/><ellipse cx="1121" cy="832" rx="25" ry="17"/>
+          </g>
+          <g fill="#587566" opacity=".39">
+            <circle cx="182" cy="259" r="9"/><circle cx="540" cy="163" r="8"/>
+            <circle cx="1014" cy="132" r="8"/><circle cx="1401" cy="251" r="8"/>
+            <circle cx="1408" cy="574" r="8"/><circle cx="532" cy="770" r="8"/>
+          </g>
+
+          <g fill="#a89776" opacity=".56">
+            <circle cx="677" cy="701" r="2.5"/><circle cx="632" cy="747" r="2"/>
+            <circle cx="926" cy="708" r="2.3"/><circle cx="961" cy="752" r="1.8"/>
+            <circle cx="661" cy="603" r="2"/><circle cx="947" cy="604" r="2"/>
+          </g>
+          <g fill="#d7bc83">
+            <circle cx="527" cy="570" r="2.2"/><circle cx="1070" cy="674" r="2.1"/>
+            <circle cx="430" cy="338" r="1.8"/><circle cx="1193" cy="432" r="1.8"/>
+          </g>
+        </svg>
+
+        <canvas
+          class="world-canvas"
+          id="overviewCanvas"
+          aria-label="可旋转的立体游乐园全景，六座设施持续运转"
+        ></canvas>
+        <div class="aerial-tint" aria-hidden="true"></div>
+        <div class="overview-celestial celestial-body" aria-hidden="true">
+          <span class="celestial-sun"></span>
+          <span class="celestial-moon"></span>
+        </div>
+
+        <div class="map-sites" id="mapSites">
+          <noscript><p class="noscript-message">请启用 JavaScript，才能进入这座可互动的游乐园。</p></noscript>
+        </div>
+
+        <div class="map-footer">
+          <div class="map-instruction">
+            <span class="instruction-ring" aria-hidden="true"></span>
+            <div>
+              <strong>选择一处设施</strong>
+              <small>进入它的夜间特写</small>
+            </div>
+          </div>
+          <div class="map-count">
+            <span>06</span>
+            <small>处已开放坐标</small>
+          </div>
+        </div>
+
+        <div class="map-meta" aria-hidden="true">
+          <span>N</span>
+          <i></i>
+          <small>MOONLIGHT ROUTE</small>
+        </div>
+      </section>
+    </main>
+
+    <section class="focus-view" id="focusView" aria-hidden="true">
+      <div class="focus-visual">
+        <button type="button" class="back-button" id="backButton">
+          <span aria-hidden="true">←</span>
+          返回全园
+        </button>
+
+        <div class="focus-atmosphere" aria-hidden="true">
+          <div class="focus-celestial celestial-body">
+            <span class="celestial-sun"></span>
+            <span class="celestial-moon"></span>
+          </div>
+          <div class="focus-fog focus-fog-a"></div>
+          <div class="focus-fog focus-fog-b"></div>
+        </div>
+
+        <canvas
+          class="focus-canvas"
+          id="focusCanvas"
+          aria-label="选中的游乐设施立体模型，可持续运转并拖动旋转"
+        ></canvas>
+
+        <div class="model-hint" id="modelHint">
+          <span aria-hidden="true">↔</span>
+          拖动旋转 · 滚轮缩放
+        </div>
+
+        <div class="cabin-hint" id="cabinHint" hidden>
+          <span>点击任意轿厢，播放你的歌单</span>
+          <button type="button" id="musicLibraryButton">音乐库</button>
+        </div>
+
+        <div class="music-player" id="musicPlayer" hidden aria-live="polite">
+          <button type="button" class="music-toggle" id="musicToggle" aria-label="暂停音乐">
+            <span aria-hidden="true">Ⅱ</span>
+          </button>
+          <div class="music-copy">
+            <small>正在播放</small>
+            <strong id="trackTitle">月蚀圆舞曲</strong>
+          </div>
+          <div class="equalizer" aria-hidden="true">
+            <i></i><i></i><i></i><i></i>
+          </div>
+          <button type="button" class="music-next" id="musicNext">换一首</button>
+          <button type="button" class="music-stop" id="musicStop" aria-label="停止播放">×</button>
+        </div>
+
+        <div class="focus-caption" aria-hidden="true">
+          <span id="focusIndex">01 / 06</span>
+          <i></i>
+          <span id="focusCategory">夜间开放</span>
+        </div>
+        <div class="focus-edge-label" aria-hidden="true">NIGHT RIDE · AFTER HOURS</div>
+      </div>
+
+      <div class="focus-copy">
+        <div class="focus-copy-inner">
+          <p class="focus-eyebrow" id="focusEyebrow">快乐坐标 · 01</p>
+          <h2 id="focusTitle">月轮摩天轮</h2>
+          <p class="focus-subtitle" id="focusSubtitle"></p>
+          <div class="focus-divider" aria-hidden="true"></div>
+          <p class="focus-lore" id="focusLore"></p>
+
+          <form id="briefForm">
+            <label class="field-label" for="briefText">你想留下什么？</label>
+            <div class="textarea-wrap">
+              <textarea
+                id="briefText"
+                name="brief"
+                maxlength="500"
+                rows="7"
+                placeholder="它让你想起某个夜晚，或者某个还没有一起去的人。"
+              ></textarea>
+              <span class="character-count" id="characterCount">0 / 500</span>
+            </div>
+            <div class="form-footer">
+              <span class="save-state" id="saveState" aria-live="polite"></span>
+              <button type="button" class="clear-brief" id="clearBriefButton" hidden>清空简述</button>
+            </div>
+            <button type="submit" class="save-button">
+              <span>收进园长手记</span>
+              <span aria-hidden="true">↗</span>
+            </button>
+          </form>
+        </div>
+
+        <div class="focus-copy-footer">
+          <span id="focusCounter">01 / 06</span>
+          <span>所有简述只保存在你的浏览器</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <dialog class="overlay-dialog profile-dialog" id="profileDialog" aria-labelledby="profileDialogTitle">
+    <div class="dialog-panel">
+      <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      <p class="dialog-kicker">园长专属区</p>
+      <h2 id="profileDialogTitle">给乐园改名</h2>
+      <p class="dialog-subtitle">它会出现在园门、标题和这座夜游乐园的每一处角落。</p>
+
+      <form id="profileForm">
+        <label class="field-label" for="parkNameInput">乐园名称</label>
+        <input class="text-input" id="parkNameInput" name="parkName" maxlength="24" autocomplete="off">
+
+        <label class="field-label" for="parkTaglineInput">一句欢迎语</label>
+        <div class="textarea-wrap">
+          <textarea
+            id="parkTaglineInput"
+            name="parkTagline"
+            maxlength="80"
+            rows="3"
+            placeholder="写下此刻最想对自己说的话。"
+          ></textarea>
+          <span class="character-count" id="profileCharacterCount">0 / 80</span>
+        </div>
+
+        <button type="submit" class="save-button">点亮新招牌 <span aria-hidden="true">↗</span></button>
+        <p class="storage-hint" id="profileStorageHint">改动会保存在这台设备的浏览器里，下次打开还在。</p>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog class="overlay-dialog journal-dialog" id="journalDialog" aria-labelledby="journalDialogTitle">
+    <div class="dialog-panel journal-panel">
+      <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      <p class="dialog-kicker">PRIVATE JOURNAL</p>
+      <div class="journal-heading">
+        <div>
+          <h2 id="journalDialogTitle">园长手记</h2>
+          <p class="dialog-subtitle">那些留在夜色里的字，都在这里。</p>
+        </div>
+        <span class="journal-total" id="journalTotal">0 条</span>
+      </div>
+      <div class="journal-list" id="journalList"></div>
+    </div>
+  </dialog>
+
+  <dialog class="overlay-dialog weather-dialog" id="weatherDialog" aria-labelledby="weatherDialogTitle">
+    <div class="dialog-panel">
+      <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      <p class="dialog-kicker">LIVE WEATHER</p>
+      <h2 id="weatherDialogTitle">同步城市天气</h2>
+      <p class="dialog-subtitle">选择城市后，乐园会随当地的实时天气改变雨、雪、雾和光线。</p>
+
+      <div class="weather-actions">
+        <button type="button" class="location-button" id="useLocationButton">
+          <span class="location-crosshair" aria-hidden="true"></span>
+          使用当前位置
+        </button>
+        <span>或</span>
+      </div>
+
+      <form class="city-search-form" id="citySearchForm">
+        <label class="sr-only" for="citySearchInput">搜索城市</label>
+        <input
+          class="text-input"
+          id="citySearchInput"
+          type="search"
+          autocomplete="off"
+          placeholder="输入城市，例如：杭州、London"
+        >
+        <button type="submit">查找</button>
+      </form>
+      <div class="city-results" id="cityResults" role="listbox" aria-label="城市搜索结果"></div>
+      <p class="weather-message" id="weatherMessage" aria-live="polite"></p>
+
+      <section class="weather-now" id="weatherNow" hidden aria-label="当前城市天气">
+        <span class="weather-now-icon" id="weatherNowIcon" aria-hidden="true"></span>
+        <div>
+          <p class="weather-now-place" id="weatherNowPlace"></p>
+          <p class="weather-now-conditions" id="weatherNowConditions"></p>
+        </div>
+        <strong class="weather-now-temp" id="weatherNowTemp"></strong>
+      </section>
+
+      <div class="weather-details" id="weatherDetails" hidden>
+        <span><small>体感</small><strong id="weatherFeels"></strong></span>
+        <span><small>湿度</small><strong id="weatherHumidity"></strong></span>
+        <span><small>风速</small><strong id="weatherWind"></strong></span>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="overlay-dialog music-dialog" id="musicDialog" aria-labelledby="musicDialogTitle">
+    <div class="dialog-panel">
+      <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      <p class="dialog-kicker">PERSONAL SOUNDTRACK</p>
+      <h2 id="musicDialogTitle">我的摩天轮歌单</h2>
+      <p class="dialog-subtitle">选择桌面上的“音乐”文件夹。浏览器只读取其中的音频文件，不会上传或修改它们。</p>
+
+      <div class="music-library-actions">
+        <button type="button" class="location-button" id="chooseMusicFolderButton">
+          <span class="folder-mark" aria-hidden="true"></span>
+          选择“音乐”文件夹
+        </button>
+        <button type="button" class="secondary-file-button" id="chooseMusicFilesButton">
+          选择文件
+        </button>
+        <input
+          id="musicFilesInput"
+          class="sr-only"
+          type="file"
+          accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac,.opus"
+          multiple
+        >
+      </div>
+
+      <p class="music-library-message" id="musicLibraryMessage" aria-live="polite"></p>
+      <div class="music-library-list" id="musicLibraryList"></div>
+
+      <div class="music-library-footer">
+        <span id="musicLibraryCount">0 首音乐</span>
+        <button type="button" id="clearMusicLibrary" hidden>清除歌单</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="assets/vendor/three.min.js"></script>
+  <script src="assets/vendor/GLTFLoader.js"></script>
+  <script src="app.js?v=20261029-10"></script>
+</body>
+</html>

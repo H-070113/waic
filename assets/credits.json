@@ -1,0 +1,46 @@
+{
+  "source": "Unsplash",
+  "license": "Unsplash License",
+  "usage": "Personal project imagery",
+  "models": {
+    "carouselHorse": {
+      "name": "Horse.glb",
+      "source": "three.js examples",
+      "page": "https://github.com/mrdoob/three.js/blob/dev/examples/models/gltf/Horse.glb"
+    }
+  },
+  "photos": {
+    "overview": {
+      "photoId": "photo-1700463108328-2209e101b6ac",
+      "page": "https://unsplash.com/photos/1700463108328-2209e101b6ac"
+    },
+    "ferris": {
+      "photoId": "photo-1638452933989-7a9faf018c17",
+      "page": "https://unsplash.com/photos/1638452933989-7a9faf018c17"
+    },
+    "ferrisAlt": {
+      "photoId": "photo-1672401546866-10f4f5e7a77d",
+      "page": "https://unsplash.com/photos/1672401546866-10f4f5e7a77d"
+    },
+    "coaster": {
+      "photoId": "photo-1586835790628-542319da6eba",
+      "page": "https://unsplash.com/photos/1586835790628-542319da6eba"
+    },
+    "carousel": {
+      "photoId": "photo-1605127943669-7733ab15d636",
+      "page": "https://unsplash.com/photos/1605127943669-7733ab15d636"
+    },
+    "slide": {
+      "photoId": "photo-1701937458569-60254a79fa09",
+      "page": "https://unsplash.com/photos/1701937458569-60254a79fa09"
+    },
+    "garden": {
+      "photoId": "photo-1617387265389-ae85aa93b3ee",
+      "page": "https://unsplash.com/photos/1617387265389-ae85aa93b3ee"
+    },
+    "pendulum": {
+      "photoId": "photo-1766848443347-201a78747497",
+      "page": "https://unsplash.com/photos/1766848443347-201a78747497"
+    }
+  }
+}
