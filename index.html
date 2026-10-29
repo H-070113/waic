@@ -233,11 +233,11 @@
 
         <div class="model-hint" id="modelHint">
           <span aria-hidden="true">↔</span>
-          拖动旋转 · 滚轮缩放
+          拖动旋转 · 滚轮 / 双指缩放
         </div>
 
         <div class="cabin-hint" id="cabinHint" hidden>
-          <span>点击任意轿厢，播放你的歌单</span>
+          <span>点击任意轿厢，随机播放内置歌单</span>
           <button type="button" id="musicLibraryButton">音乐库</button>
         </div>
 
@@ -397,8 +397,8 @@
     <div class="dialog-panel">
       <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
       <p class="dialog-kicker">PERSONAL SOUNDTRACK</p>
-      <h2 id="musicDialogTitle">我的摩天轮歌单</h2>
-      <p class="dialog-subtitle">选择桌面上的“音乐”文件夹。浏览器只读取其中的音频文件，不会上传或修改它们。</p>
+      <h2 id="musicDialogTitle">摩天轮歌单</h2>
+      <p class="dialog-subtitle">网站已内置云端歌单，所有访客都可播放；你也可以选择自己电脑里的音乐替换本次歌单。</p>
 
       <div class="music-library-actions">
         <button type="button" class="location-button" id="chooseMusicFolderButton">
@@ -430,6 +430,7 @@
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script src="assets/vendor/three.min.js"></script>
   <script src="assets/vendor/GLTFLoader.js"></script>
-  <script src="app.js?v=20261029-10"></script>
+  <script src="assets/music/playlist.js?v=20261029-11"></script>
+  <script src="app.js?v=20261029-11"></script>
 </body>
 </html>

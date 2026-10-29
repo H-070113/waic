@@ -208,6 +208,7 @@ function init() {
   renderSites();
   renderJournalMeta();
   bindEvents();
+  loadBundledMusic();
   applyDarkness(state.darkness, false);
   renderWeatherStatus(state.weather);
   updateLocalClock();
@@ -1055,6 +1056,9 @@ function stopLegacyMusic(hidePlayer = false) {
 function openMusicDialog() {
   elements.musicDialog.showModal();
   renderMusicLibrary();
+  if (!elements.musicLibraryMessage.textContent && userMusicTracks.length) {
+    elements.musicLibraryMessage.textContent = `当前载入 ${userMusicTracks.length} 首音乐，点击摩天轮轿厢即可随机播放。`;
+  }
 }
 
 async function chooseMusicFolder() {
@@ -1124,7 +1128,7 @@ async function importMusicFiles(files) {
 
 function renderMusicLibrary() {
   elements.musicLibraryCount.textContent = `${userMusicTracks.length} 首音乐`;
-  elements.clearMusicLibrary.hidden = userMusicTracks.length === 0;
+  elements.clearMusicLibrary.hidden = !userMusicTracks.some((track) => !track.bundled);
   if (!userMusicTracks.length) {
     elements.musicLibraryList.innerHTML = `
       <div class="music-library-empty">歌单还是空的。选择桌面上的“音乐”文件夹后，这里会列出你的歌曲。</div>
@@ -1136,9 +1140,35 @@ function renderMusicLibrary() {
     <div class="music-library-item">
       <span>${String(index + 1).padStart(2, "0")}</span>
       <strong title="${escapeHtml(track.name)}">${escapeHtml(track.name)}</strong>
-      <small>${escapeHtml(track.extension)} · ${formatFileSize(track.size)}</small>
+      <small>${track.artist ? `${escapeHtml(track.artist)} · ` : ""}${escapeHtml(track.extension)} · ${formatFileSize(track.size)}</small>
     </div>
   `).join("");
+}
+
+function loadBundledMusic() {
+  const playlist = Array.isArray(window.STAR_ISLE_BUNDLED_PLAYLIST)
+    ? window.STAR_ISLE_BUNDLED_PLAYLIST
+    : [];
+  const musicDirectory = new URL("assets/music/", document.baseURI);
+
+  userMusicTracks = playlist
+    .map((track, index) => {
+      const file = typeof track?.file === "string" ? track.file.trim() : "";
+      if (!file) return null;
+      return {
+        id: index,
+        name: track.title || file.replace(/\.[^.]+$/, ""),
+        artist: track.artist || "",
+        extension: file.split(".").pop()?.toUpperCase() || "AUDIO",
+        url: new URL(file, musicDirectory).href,
+        size: Number(track.size) || 0,
+        bundled: true
+      };
+    })
+    .filter(Boolean);
+
+  userMusicUrls = userMusicTracks.map((track) => track.url);
+  renderMusicLibrary();
 }
 
 function formatFileSize(bytes) {
@@ -1232,18 +1262,21 @@ function stopMusic(hidePlayer = false) {
 }
 
 function clearMusicLibrary() {
-  if (!window.confirm("只清除网页中的歌单，不会删除桌面“音乐”文件夹里的歌曲。要继续吗？")) return;
+  if (!window.confirm("只清除你后来载入的个人歌单，并恢复网站内置歌单。要继续吗？")) return;
   stopMusic(true);
   revokeMusicUrls();
-  userMusicTracks = [];
   activeMusicTrackIndex = -1;
-  elements.musicLibraryMessage.textContent = "歌单已清除，可以重新选择音乐文件夹。";
-  renderMusicLibrary();
+  loadBundledMusic();
+  elements.musicLibraryMessage.textContent = userMusicTracks.length
+    ? `已恢复内置歌单，共 ${userMusicTracks.length} 首音乐。`
+    : "歌单已清除，可以重新选择音乐文件夹。";
   deletePersistedMusicFiles().catch(() => {});
 }
 
 function revokeMusicUrls() {
-  userMusicUrls.forEach((url) => URL.revokeObjectURL(url));
+  userMusicUrls.forEach((url) => {
+    if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+  });
   userMusicUrls = [];
 }
 
@@ -4732,9 +4765,12 @@ function updateOrbitCamera(world) {
 }
 
 function bindOrbit(canvas, world) {
+  const activePointers = new Map();
   let dragging = false;
   let panning = false;
   let pointerMoved = false;
+  let pinching = false;
+  let pinchDistance = 0;
   let previousX = 0;
   let previousY = 0;
 
@@ -4743,25 +4779,72 @@ function bindOrbit(canvas, world) {
     world.orbit.targetZ = THREE.MathUtils.clamp(world.orbit.targetZ, -30, 30);
   };
 
+  const getPointerPairDistance = () => {
+    const pointers = [...activePointers.values()];
+    if (pointers.length < 2) return 0;
+    return Math.hypot(
+      pointers[1].clientX - pointers[0].clientX,
+      pointers[1].clientY - pointers[0].clientY
+    );
+  };
+
+  const getDistanceLimits = () => (
+    world === overviewWorld ? [22, 82] : [9, 28]
+  );
+
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
   canvas.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "touch") event.preventDefault();
+    activePointers.set(event.pointerId, {
+      clientX: event.clientX,
+      clientY: event.clientY
+    });
     dragging = true;
     panning = event.button === 2 || event.button === 1 || event.shiftKey;
     pointerMoved = false;
     previousX = event.clientX;
     previousY = event.clientY;
+    if (activePointers.size > 1) {
+      pinching = true;
+      pointerMoved = true;
+      pinchDistance = getPointerPairDistance();
+    }
     canvas.setPointerCapture(event.pointerId);
     canvas.classList.toggle("is-panning", panning);
   });
 
   canvas.addEventListener("pointermove", (event) => {
+    if (activePointers.has(event.pointerId)) {
+      activePointers.set(event.pointerId, {
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+    }
     if (!dragging) {
       if (world === focusWorld) {
         canvas.style.cursor = findCabinAtPointer(event) !== null ? "pointer" : "grab";
       }
       return;
     }
+
+    if (pinching || activePointers.size > 1) {
+      event.preventDefault();
+      const nextDistance = getPointerPairDistance();
+      if (nextDistance > 0 && pinchDistance > 0) {
+        const [minDistance, maxDistance] = getDistanceLimits();
+        world.orbit.distance = THREE.MathUtils.clamp(
+          world.orbit.distance * (pinchDistance / nextDistance),
+          minDistance,
+          maxDistance
+        );
+        updateOrbitCamera(world);
+      }
+      pinchDistance = nextDistance;
+      pointerMoved = true;
+      return;
+    }
+
     const deltaX = event.clientX - previousX;
     const deltaY = event.clientY - previousY;
     if (Math.abs(deltaX) + Math.abs(deltaY) > 3) pointerMoved = true;
@@ -4788,16 +4871,28 @@ function bindOrbit(canvas, world) {
   });
 
   const release = (event, allowPick) => {
+    activePointers.delete(event.pointerId);
     const shouldPick =
       allowPick &&
       !pointerMoved &&
       !panning &&
       event.button === 0 &&
-      canvas === elements.focusCanvas;
-    dragging = false;
-    panning = false;
-    canvas.classList.remove("is-panning");
+      canvas === elements.focusCanvas &&
+      activePointers.size === 0;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    if (activePointers.size === 0) {
+      dragging = false;
+      panning = false;
+      pinching = false;
+      pinchDistance = 0;
+      canvas.classList.remove("is-panning");
+    } else {
+      const remaining = activePointers.values().next().value;
+      previousX = remaining.clientX;
+      previousY = remaining.clientY;
+      pinching = false;
+      pinchDistance = 0;
+    }
     if (shouldPick) {
       const cabinIndex = findCabinAtPointer(event);
       if (cabinIndex !== null) playRandomTrack(cabinIndex);
@@ -4808,10 +4903,11 @@ function bindOrbit(canvas, world) {
 
   canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
+    const [minDistance, maxDistance] = getDistanceLimits();
     world.orbit.distance = THREE.MathUtils.clamp(
       world.orbit.distance + event.deltaY * 0.025,
-      world === overviewWorld ? 22 : 9,
-      world === overviewWorld ? 82 : 28
+      minDistance,
+      maxDistance
     );
     updateOrbitCamera(world);
   }, { passive: false });
