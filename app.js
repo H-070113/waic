@@ -12,6 +12,7 @@ let storageError = "";
 let darknessSaveTimer = null;
 let clockTimer = null;
 let weatherRefreshTimer = null;
+let locationRefreshTimer = null;
 let weatherAbortController = null;
 let citySearchResults = [];
 let selectedCabinIndex = null;
@@ -215,11 +216,23 @@ function init() {
   clockTimer = window.setInterval(updateLocalClock, 30000);
   initThreeWorlds();
   animateWorlds();
-  if (state.location) refreshWeather(false);
+  if (state.location) {
+    refreshWeather();
+  } else {
+    requestCurrentLocation(true);
+  }
   restoreMusicFiles();
   weatherRefreshTimer = window.setInterval(() => {
-    if (state.location) refreshWeather(state.location, false);
-  }, 10 * 60 * 1000);
+    if (state.location) refreshWeather(undefined, false);
+  }, 5 * 60 * 1000);
+  locationRefreshTimer = window.setInterval(() => {
+    if (state.location?.source === "current") requestCurrentLocation(true);
+  }, 20 * 60 * 1000);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    updateLocalClock();
+    if (state.location) refreshWeather(undefined, false);
+  });
 }
 
 function encodeState(payload) {
@@ -333,7 +346,10 @@ function normalizeSavedLocation(location) {
     detail: cleanString(location.detail, ""),
     latitude,
     longitude,
-    timezone: cleanString(location.timezone, "auto")
+    timezone: cleanString(location.timezone, "auto"),
+    source: location.source === "current" || location.source === "city"
+      ? location.source
+      : null
   };
 }
 
@@ -348,9 +364,20 @@ function normalizeSavedWeather(weather) {
     feelsLike: Number(weather.feelsLike),
     humidity: Number(weather.humidity),
     wind: Number(weather.wind),
-    isDay: Boolean(weather.isDay),
+    isDay: parseDaylight(weather.isDay),
+    sunrise: cleanString(weather.sunrise, ""),
+    sunset: cleanString(weather.sunset, ""),
     observedAt: Number(weather.observedAt) || Date.now()
   };
+}
+
+function parseDaylight(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    return value === "1" || value.toLowerCase() === "true";
+  }
+  return false;
 }
 
 function persistState(payload) {
@@ -457,7 +484,7 @@ function bindEvents() {
   document.getElementById("decorateButton").addEventListener("click", openProfile);
   document.getElementById("journalButton").addEventListener("click", openJournal);
   elements.weatherButton.addEventListener("click", openWeatherDialog);
-  elements.useLocationButton.addEventListener("click", requestCurrentLocation);
+  elements.useLocationButton.addEventListener("click", () => requestCurrentLocation());
   elements.citySearchForm.addEventListener("submit", handleCitySearch);
   elements.cityResults.addEventListener("click", (event) => {
     const result = event.target.closest("[data-city-index]");
@@ -607,7 +634,9 @@ function applyDarkness(value, persist = false) {
 
 function openWeatherDialog() {
   elements.weatherDialog.showModal();
-  elements.weatherMessage.textContent = "";
+  elements.weatherMessage.textContent = state.location
+    ? ""
+    : "请允许浏览器使用当前位置，或在下方搜索城市。";
   if (state.location && state.weather) {
     renderWeatherDetails(state.location, state.weather);
   }
@@ -616,15 +645,15 @@ function openWeatherDialog() {
   }, 80);
 }
 
-async function requestCurrentLocation() {
+async function requestCurrentLocation(automatic = false) {
   if (!navigator.geolocation) {
     elements.weatherMessage.textContent = "这个浏览器不支持定位，请直接搜索城市。";
-    elements.citySearchInput.focus();
+    if (!automatic) elements.citySearchInput.focus();
     return;
   }
 
   elements.useLocationButton.disabled = true;
-  elements.weatherMessage.textContent = "正在获取当前位置…";
+  if (!automatic) elements.weatherMessage.textContent = "正在获取当前位置…";
 
   try {
     const position = await new Promise((resolve, reject) => {
@@ -655,14 +684,15 @@ async function requestCurrentLocation() {
       detail,
       latitude: position.coords.latitude,
       longitude: position.coords.longitude,
-      timezone: "auto"
-    });
+      timezone: "auto",
+      source: "current"
+    }, !automatic);
   } catch (error) {
     const denied = error?.code === 1;
     elements.weatherMessage.textContent = denied
       ? "没有获得定位权限，可以在下方搜索城市。"
       : "暂时无法获取当前位置，请直接搜索城市。";
-    elements.citySearchInput.focus();
+    if (!automatic) elements.citySearchInput.focus();
   } finally {
     elements.useLocationButton.disabled = false;
   }
@@ -690,7 +720,8 @@ async function handleCitySearch(event) {
       detail: [result.admin1, result.country].filter(Boolean).join(" · "),
       latitude: result.latitude,
       longitude: result.longitude,
-      timezone: result.timezone || "auto"
+      timezone: result.timezone || "auto",
+      source: "city"
     }));
 
     if (!citySearchResults.length) {
@@ -712,12 +743,12 @@ async function handleCitySearch(event) {
   }
 }
 
-async function selectWeatherLocation(location) {
-  const success = await refreshWeather(location);
+async function selectWeatherLocation(location, showFeedback = true) {
+  const success = await refreshWeather(location, showFeedback);
   if (success) {
     elements.cityResults.innerHTML = "";
     elements.citySearchInput.value = "";
-    elements.weatherDialog.close();
+    if (elements.weatherDialog.open) elements.weatherDialog.close();
   }
 }
 
@@ -732,6 +763,8 @@ async function refreshWeather(location = state.location, showFeedback = true) {
       latitude: String(location.latitude),
       longitude: String(location.longitude),
       current: "temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m,relative_humidity_2m",
+      daily: "sunrise,sunset",
+      forecast_days: "1",
       timezone: "auto"
     });
     const data = await fetchJson(
@@ -739,20 +772,25 @@ async function refreshWeather(location = state.location, showFeedback = true) {
       weatherAbortController.signal
     );
     const current = data.current;
+    const sunrise = data.daily?.sunrise?.[0] || "";
+    const sunset = data.daily?.sunset?.[0] || "";
     const weather = {
       code: Number(current.weather_code),
       temperature: Number(current.temperature_2m),
       feelsLike: Number(current.apparent_temperature),
       humidity: Number(current.relative_humidity_2m),
       wind: Number(current.wind_speed_10m),
-      isDay: Boolean(current.is_day),
+      isDay: getDaylightAt(current.time, sunrise, sunset, current.is_day),
+      sunrise,
+      sunset,
       observedAt: Date.now(),
       timezone: data.timezone || location.timezone || "auto"
     };
 
     state.location = {
       ...location,
-      timezone: weather.timezone
+      timezone: weather.timezone,
+      source: location.source || state.location?.source || null
     };
     state.weather = weather;
     saveState();
@@ -774,15 +812,28 @@ async function refreshWeather(location = state.location, showFeedback = true) {
 }
 
 async function fetchJson(url, signal) {
-  const response = await fetch(url, { signal });
+  const response = await fetch(url, { signal, cache: "no-store" });
   if (!response.ok) throw new Error(`Request failed: ${response.status}`);
   return response.json();
+}
+
+function getDaylightAt(localDateTime, sunrise, sunset, fallback) {
+  if (
+    typeof localDateTime === "string" &&
+    typeof sunrise === "string" &&
+    typeof sunset === "string" &&
+    localDateTime.slice(0, 10) === sunrise.slice(0, 10) &&
+    sunrise.slice(0, 10) === sunset.slice(0, 10)
+  ) {
+    return localDateTime >= sunrise && localDateTime <= sunset;
+  }
+  return parseDaylight(fallback);
 }
 
 function weatherMeta(code, isDay) {
   if (code === 0) return { key: "clear", label: isDay ? "晴朗" : "晴夜", icon: isDay ? "☀" : "☾" };
   if (code === 1) return { key: "clear", label: "大致晴朗", icon: isDay ? "☀" : "☾" };
-  if (code === 2) return { key: "partly", label: "局部多云", icon: "◐" };
+  if (code === 2) return { key: "partly", label: "局部多云", icon: isDay ? "⛅" : "☁" };
   if (code === 3) return { key: "cloudy", label: "阴", icon: "☁" };
   if (code === 45 || code === 48) return { key: "fog", label: "有雾", icon: "≋" };
   if ([51, 53, 55, 56, 57].includes(code)) return { key: "rain", label: "细雨", icon: "☂" };
@@ -794,6 +845,7 @@ function weatherMeta(code, isDay) {
 
 function renderWeatherStatus(weather) {
   if (!weather) return;
+  weather.isDay = resolveWeatherDaylight(weather) ?? weather.isDay;
   const meta = weatherMeta(weather.code, weather.isDay);
   elements.weatherSymbol.textContent = meta.icon;
   elements.weatherPlace.textContent = state.location?.name || "当前位置";
@@ -808,6 +860,32 @@ function renderWeatherStatus(weather) {
     ? "STAR ISLE · DAYLIGHT"
     : "STAR ISLE · AFTER HOURS";
   applyDarkness(state.darkness, false);
+}
+
+function resolveWeatherDaylight(weather) {
+  if (!weather?.sunrise || !weather?.sunset) return null;
+  const timeZone = state.location?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const localDateTime = getLocalDateTime(timeZone);
+  if (!localDateTime) return null;
+  return getDaylightAt(localDateTime, weather.sunrise, weather.sunset, weather.isDay);
+}
+
+function getLocalDateTime(timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
+  } catch {
+    return null;
+  }
 }
 
 function renderWeatherDetails(location, weather) {
@@ -845,7 +923,14 @@ function updateLocalClock() {
     });
   }
 
-  if (!state.weather) {
+  if (state.weather) {
+    const isDay = resolveWeatherDaylight(state.weather);
+    if (isDay !== null && isDay !== state.weather.isDay) {
+      state.weather.isDay = isDay;
+      renderWeatherStatus(state.weather);
+      renderWeatherDetails(state.location, state.weather);
+    }
+  } else {
     try {
       const hour = Number(new Intl.DateTimeFormat("en-GB", {
         timeZone,
