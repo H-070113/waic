@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#071a1d">
   <meta name="description" content="心之所向——一座可以从上帝视角漫游并写下简述的私人游乐园。">
   <title>心 · 夜游</title>
-  <link rel="stylesheet" href="styles.css?v=20261029-10">
+  <link rel="stylesheet" href="styles.css?v=20261101-04">
 </head>
 <body>
   <div class="app-shell" id="appShell">
@@ -178,10 +178,6 @@
           aria-label="可旋转的立体游乐园全景，六座设施持续运转"
         ></canvas>
         <div class="aerial-tint" aria-hidden="true"></div>
-        <div class="overview-celestial celestial-body" aria-hidden="true">
-          <span class="celestial-sun"></span>
-          <span class="celestial-moon"></span>
-        </div>
 
         <div class="map-sites" id="mapSites">
           <noscript><p class="noscript-message">请启用 JavaScript，才能进入这座可互动的游乐园。</p></noscript>
@@ -217,10 +213,6 @@
         </button>
 
         <div class="focus-atmosphere" aria-hidden="true">
-          <div class="focus-celestial celestial-body">
-            <span class="celestial-sun"></span>
-            <span class="celestial-moon"></span>
-          </div>
           <div class="focus-fog focus-fog-a"></div>
           <div class="focus-fog focus-fog-b"></div>
         </div>
@@ -271,6 +263,36 @@
           <p class="focus-subtitle" id="focusSubtitle"></p>
           <div class="focus-divider" aria-hidden="true"></div>
           <p class="focus-lore" id="focusLore"></p>
+
+          <section class="photo-panel" id="photoPanel" hidden aria-label="旋转木马相册">
+            <div class="photo-panel-head">
+              <div>
+                <p class="photo-kicker">MEMORY ALBUM</p>
+                <h3>相册</h3>
+              </div>
+              <button type="button" class="photo-admin-entry" id="photoAdminEntry">管理</button>
+            </div>
+            <form class="photo-search" id="photoSearchForm">
+              <label class="sr-only" for="photoSearchInput">输入照片名字</label>
+              <input
+                class="text-input"
+                id="photoSearchInput"
+                type="search"
+                autocomplete="off"
+                placeholder="输入照片名字，才能看到那张照片"
+              >
+              <button type="submit">查找</button>
+            </form>
+            <p class="photo-storage" id="photoStorage"></p>
+            <p class="photo-message" id="photoMessage" aria-live="polite"></p>
+            <figure class="photo-result" id="photoResult" hidden>
+              <img id="photoResultImage" alt="">
+              <figcaption>
+                <strong id="photoResultName"></strong>
+                <span id="photoResultDate"></span>
+              </figcaption>
+            </figure>
+          </section>
 
           <form id="briefForm">
             <label class="field-label" for="briefText">你想留下什么？</label>
@@ -347,6 +369,57 @@
     </div>
   </dialog>
 
+
+  <dialog class="overlay-dialog photo-admin-dialog" id="photoAdminDialog" aria-labelledby="photoAdminTitle">
+    <div class="dialog-panel">
+      <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
+      <p class="dialog-kicker">ALBUM ADMIN</p>
+      <h2 id="photoAdminTitle">相册管理</h2>
+
+      <div id="photoGate">
+        <p class="dialog-subtitle">输入管理员密码，才能查看和整理所有照片。</p>
+        <form class="photo-pass-form" id="photoGateForm">
+          <label class="sr-only" for="photoPassInput">管理员密码</label>
+          <input class="text-input" id="photoPassInput" type="password" inputmode="numeric" autocomplete="off" placeholder="管理员密码">
+          <button type="submit">进入</button>
+        </form>
+        <p class="photo-message" id="photoGateMessage" aria-live="polite"></p>
+      </div>
+
+      <div id="photoAdminBody" hidden>
+        <form class="photo-upload" id="photoUploadForm">
+          <div class="photo-field">
+            <label class="field-label" for="photoNameInput">照片名字</label>
+            <input class="text-input" id="photoNameInput" type="text" maxlength="40" autocomplete="off" placeholder="以后用这个名字搜索，例如：第一次坐木马">
+          </div>
+          <div class="photo-field">
+            <label class="field-label" for="photoFileInput">选择图片</label>
+            <input class="photo-file-input" id="photoFileInput" type="file" accept="image/*">
+          </div>
+          <p class="photo-message" id="photoUploadMessage" aria-live="polite"></p>
+          <button type="submit" class="save-button">
+            <span>保存这张照片</span>
+            <span aria-hidden="true">＋</span>
+          </button>
+        </form>
+
+        <div class="photo-list" id="photoList" aria-live="polite"></div>
+
+        <form class="photo-pass-form" id="photoPassForm" hidden>
+          <input class="text-input" id="photoOldPass" type="password" autocomplete="off" placeholder="当前密码">
+          <input class="text-input" id="photoNewPass" type="password" autocomplete="off" placeholder="新密码（4–20 位）">
+          <button type="submit">保存新密码</button>
+        </form>
+        <p class="photo-message" id="photoPassMessage" aria-live="polite"></p>
+
+        <div class="photo-admin-foot">
+          <button type="button" class="photo-ghost-button" id="photoChangePassButton">修改密码</button>
+          <button type="button" class="photo-ghost-button" id="photoLockButton">退出管理</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
   <dialog class="overlay-dialog weather-dialog" id="weatherDialog" aria-labelledby="weatherDialogTitle">
     <div class="dialog-panel">
       <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
@@ -360,6 +433,12 @@
           使用当前位置
         </button>
         <span>或</span>
+      </div>
+
+      <div class="weather-memory" id="weatherMemory" hidden>
+        <span class="weather-memory-mark" aria-hidden="true">◈</span>
+        <span>已记住 <strong id="weatherMemoryPlace"></strong>，打开页面会自动同步</span>
+        <button type="button" class="weather-memory-clear" id="weatherMemoryClear">忘记</button>
       </div>
 
       <form class="city-search-form" id="citySearchForm">
@@ -431,6 +510,6 @@
   <script src="assets/vendor/three.min.js"></script>
   <script src="assets/vendor/GLTFLoader.js"></script>
   <script src="assets/music/playlist.js?v=20261029-11"></script>
-  <script src="app.js?v=20261030-weather"></script>
+  <script src="app.js?v=20261101-04"></script>
 </body>
 </html>

@@ -1,18 +1,18 @@
 const LAKE = { x: -3.2, z: -16.8, rx: 6.8, rz: 4.2, tilt: -0.26 };
 const GROUND_RADIUS = 36;
+const GROUND_FAR_RADIUS = 210;
 const GROUND_BASE_Y = -0.16;
 
 const STORAGE_KEY = "star-isle-park-v1";
 const CARRY_PREFIX = `${STORAGE_KEY}::`;
 const HASH_PREFIX = "#park=";
-const DEFAULT_DARKNESS = 58;
+const DEFAULT_DARKNESS = 40;
 let storageAvailable = true;
 let carryToHash = false;
 let storageError = "";
 let darknessSaveTimer = null;
 let clockTimer = null;
 let weatherRefreshTimer = null;
-let locationRefreshTimer = null;
 let weatherAbortController = null;
 let citySearchResults = [];
 let selectedCabinIndex = null;
@@ -37,7 +37,7 @@ const facilities = [
     category: "缓慢升空",
     subtitle: "把整座乐园，收进一圈月光里。",
     lore: "它转得很慢，慢到刚好看清远处的灯，也刚好听见自己心里的声音。",
-    accent: "#c7af7b",
+    accent: "#f6c469",
     world: [-11, 0, -7],
     focusTarget: 4.2,
     focusDistance: 18.5
@@ -49,7 +49,7 @@ const facilities = [
     category: "风里失重",
     subtitle: "沿着夜色俯冲，再带着还没说完的话返航。",
     lore: "第一秒有些紧张，第二秒开始大笑。它专门收集那些来不及藏起来的快乐。",
-    accent: "#aa7566",
+    accent: "#ef7455",
     world: [8, 0, -9],
     focusTarget: 2.6,
     focusDistance: 23,
@@ -63,10 +63,10 @@ const facilities = [
     category: "旧梦回转",
     subtitle: "挑一匹喜欢的白马，绕一圈很远以前。",
     lore: "音乐响起以后，请挑一个最顺眼的位置。没有固定的舞步，开心就好。",
-    accent: "#8da393",
-    world: [0, 0, 2],
-    focusTarget: 2.6,
-    focusDistance: 14.5
+    accent: "#7fd8c4",
+    world: [0, 0, 0],
+    focusTarget: 2.5,
+    focusDistance: 16.5
   },
   {
     id: "slide",
@@ -75,7 +75,7 @@ const facilities = [
     category: "向晚滑落",
     subtitle: "从最高的位置出发，把没必要的烦恼留在身后。",
     lore: "滑下来的时候别闭眼。风会替你翻页，落地以后又是轻飘飘的一天。",
-    accent: "#7f9ca5",
+    accent: "#59c2e0",
     world: [-12, 0, 10],
     focusTarget: 3.3,
     focusDistance: 18,
@@ -88,7 +88,7 @@ const facilities = [
     category: "安静发光",
     subtitle: "一座只有你知道入口的花园。",
     lore: "这里不赶时间。可以在花丛边坐一会儿，把没说出口的话交给晚风。",
-    accent: "#91879f",
+    accent: "#b98be6",
     world: [12, 0, 10],
     focusTarget: 2.4,
     focusDistance: 14,
@@ -101,7 +101,7 @@ const facilities = [
     category: "心跳悬空",
     subtitle: "荡到云层之上，和晚风短暂地打个照面。",
     lore: "最高点会安静两秒。看见月亮时，记得替今天的自己许一个小愿望。",
-    accent: "#966e76",
+    accent: "#f08a4b",
     world: [12, 0, -1],
     focusTarget: 4,
     focusDistance: 17
@@ -127,6 +127,7 @@ let lastFocusedSite = null;
 let overviewWorld = null;
 let focusWorld = null;
 let modelTime = 0;
+let lastFrameTime = 0;
 
 const elements = {
   appShell: document.getElementById("appShell"),
@@ -174,6 +175,9 @@ const elements = {
   citySearchInput: document.getElementById("citySearchInput"),
   cityResults: document.getElementById("cityResults"),
   weatherMessage: document.getElementById("weatherMessage"),
+  weatherMemory: document.getElementById("weatherMemory"),
+  weatherMemoryPlace: document.getElementById("weatherMemoryPlace"),
+  weatherMemoryClear: document.getElementById("weatherMemoryClear"),
   weatherNow: document.getElementById("weatherNow"),
   weatherNowIcon: document.getElementById("weatherNowIcon"),
   weatherNowPlace: document.getElementById("weatherNowPlace"),
@@ -199,16 +203,541 @@ const elements = {
   musicLibraryList: document.getElementById("musicLibraryList"),
   musicLibraryCount: document.getElementById("musicLibraryCount"),
   clearMusicLibrary: document.getElementById("clearMusicLibrary"),
-  toast: document.getElementById("toast")
+  toast: document.getElementById("toast"),
+  photoPanel: document.getElementById("photoPanel"),
+  photoAdminEntry: document.getElementById("photoAdminEntry"),
+  photoSearchForm: document.getElementById("photoSearchForm"),
+  photoSearchInput: document.getElementById("photoSearchInput"),
+  photoMessage: document.getElementById("photoMessage"),
+  photoStorage: document.getElementById("photoStorage"),
+  photoResult: document.getElementById("photoResult"),
+  photoResultImage: document.getElementById("photoResultImage"),
+  photoResultName: document.getElementById("photoResultName"),
+  photoResultDate: document.getElementById("photoResultDate"),
+  photoAdminDialog: document.getElementById("photoAdminDialog"),
+  photoGate: document.getElementById("photoGate"),
+  photoGateForm: document.getElementById("photoGateForm"),
+  photoPassInput: document.getElementById("photoPassInput"),
+  photoGateMessage: document.getElementById("photoGateMessage"),
+  photoAdminBody: document.getElementById("photoAdminBody"),
+  photoUploadForm: document.getElementById("photoUploadForm"),
+  photoNameInput: document.getElementById("photoNameInput"),
+  photoFileInput: document.getElementById("photoFileInput"),
+  photoUploadMessage: document.getElementById("photoUploadMessage"),
+  photoList: document.getElementById("photoList"),
+  photoPassForm: document.getElementById("photoPassForm"),
+  photoOldPass: document.getElementById("photoOldPass"),
+  photoNewPass: document.getElementById("photoNewPass"),
+  photoPassMessage: document.getElementById("photoPassMessage"),
+  photoChangePassButton: document.getElementById("photoChangePassButton"),
+  photoLockButton: document.getElementById("photoLockButton")
 };
 
-init();
+/* ---------- 旋转木马相册：图片存在 IndexedDB，密码存在 localStorage ---------- */
+
+const ALBUM_DB_NAME = "star-isle-album";
+const ALBUM_STORE = "photos";
+const ALBUM_LOCAL_KEY = "star-isle-album-photos";
+const ALBUM_PASS_KEY = "star-isle-album-pass";
+const ALBUM_DEFAULT_PASS = "200701";
+const ALBUM_MAX_SIZE = 12 * 1024 * 1024;
+
+let albumDbPromise = null;
+let albumBackend = null;
+let albumMemory = [];
+let albumUnlocked = false;
+let albumListUrls = [];
+let albumResultUrl = null;
+
+// 打开 IndexedDB。被浏览器拒绝（iframe、file://、无痕等）时返回 null，交给上层降级
+function openAlbumDb() {
+  if (albumDbPromise) return albumDbPromise;
+  albumDbPromise = new Promise((resolve) => {
+    if (!window.indexedDB) {
+      resolve(null);
+      return;
+    }
+    let request;
+    try {
+      request = window.indexedDB.open(ALBUM_DB_NAME, 1);
+    } catch (error) {
+      resolve(null);
+      return;
+    }
+    // 有些环境（沙箱 iframe、无痕模式）会让 open 一直不回调，加个兜底超时
+    let settled = false;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(value);
+    };
+    timer = window.setTimeout(() => finish(null), 4000);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(ALBUM_STORE)) {
+        const store = db.createObjectStore(ALBUM_STORE, { keyPath: "id" });
+        store.createIndex("name", "name", { unique: false });
+      }
+    };
+    request.onsuccess = () => finish(request.result);
+    request.onerror = () => finish(null);
+    request.onblocked = () => finish(null);
+  });
+  return albumDbPromise;
+}
+
+function localAlbumAvailable() {
+  try {
+    const probe = "__star_isle_album_probe__";
+    window.localStorage.setItem(probe, "1");
+    window.localStorage.removeItem(probe);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function readLocalAlbum() {
+  try {
+    const raw = window.localStorage.getItem(ALBUM_LOCAL_KEY);
+    if (!raw) return [];
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function writeLocalAlbum(list) {
+  window.localStorage.setItem(ALBUM_LOCAL_KEY, JSON.stringify(list));
+}
+
+// 三种后端：IndexedDB → 浏览器缓存 → 只在内存里
+async function ensureAlbumBackend() {
+  if (albumBackend) return albumBackend;
+  const db = await openAlbumDb();
+  if (db) {
+    albumBackend = "idb";
+  } else if (localAlbumAvailable()) {
+    albumBackend = "local";
+  } else {
+    albumBackend = "memory";
+  }
+  return albumBackend;
+}
+
+function photoSourceFor(photo) {
+  if (photo.blob) return URL.createObjectURL(photo.blob);
+  return photo.data || "";
+}
+
+// 降级存储放不下原图，先压到最长边 1280 的 JPEG
+function blobToDataUrl(blob, compress) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (!compress) {
+        resolve(reader.result);
+        return;
+      }
+      const image = new Image();
+      image.onload = () => {
+        const limit = 1280;
+        const scale = Math.min(1, limit / Math.max(image.width, image.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext("2d");
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        try {
+          resolve(canvas.toDataURL("image/jpeg", 0.78));
+        } catch (error) {
+          resolve(reader.result);
+        }
+      };
+      image.onerror = () => resolve(reader.result);
+      image.src = reader.result;
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function albumAll() {
+  const backend = await ensureAlbumBackend();
+  if (backend === "idb") {
+    const db = await openAlbumDb();
+    return new Promise((resolve, reject) => {
+      const request = db.transaction(ALBUM_STORE, "readonly").objectStore(ALBUM_STORE).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  }
+  if (backend === "local") return readLocalAlbum();
+  return albumMemory.slice();
+}
+
+async function albumPut(record) {
+  const backend = await ensureAlbumBackend();
+  if (backend === "idb") {
+    const db = await openAlbumDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(ALBUM_STORE, "readwrite");
+      tx.objectStore(ALBUM_STORE).put(record);
+      tx.oncomplete = () => resolve(record);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  const data = await blobToDataUrl(record.blob, backend === "local");
+  const slim = {
+    id: record.id,
+    name: record.name,
+    createdAt: record.createdAt,
+    type: record.type,
+    size: record.size,
+    data
+  };
+  if (backend === "local") {
+    const list = readLocalAlbum();
+    list.push(slim);
+    writeLocalAlbum(list);
+  } else {
+    albumMemory.push(slim);
+  }
+  return slim;
+}
+
+async function albumRemove(id) {
+  const backend = await ensureAlbumBackend();
+  if (backend === "idb") {
+    const db = await openAlbumDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(ALBUM_STORE, "readwrite");
+      tx.objectStore(ALBUM_STORE).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  if (backend === "local") {
+    writeLocalAlbum(readLocalAlbum().filter((photo) => photo.id !== id));
+  } else {
+    albumMemory = albumMemory.filter((photo) => photo.id !== id);
+  }
+}
+
+function readAlbumPass() {
+  try {
+    return localStorage.getItem(ALBUM_PASS_KEY) || ALBUM_DEFAULT_PASS;
+  } catch (error) {
+    return ALBUM_DEFAULT_PASS;
+  }
+}
+
+function writeAlbumPass(value) {
+  try {
+    localStorage.setItem(ALBUM_PASS_KEY, value);
+  } catch (error) {
+    // 存储被禁用时只在内存里生效
+  }
+}
+
+async function updatePhotoStorageHint() {
+  if (!elements.photoStorage) return;
+  const backend = await ensureAlbumBackend();
+  if (backend === "idb") {
+    elements.photoStorage.textContent = "照片保存在这台设备的浏览器数据库里。";
+    elements.photoStorage.dataset.mode = "idb";
+  } else if (backend === "local") {
+    elements.photoStorage.textContent = "本地数据库不可用，照片改存浏览器缓存（会自动压缩）。";
+    elements.photoStorage.dataset.mode = "local";
+  } else {
+    elements.photoStorage.textContent = "当前环境不允许本地存储，照片只在这次打开期间有效。";
+    elements.photoStorage.dataset.mode = "memory";
+  }
+}
+
+function setAlbumMessage(node, text, tone) {
+  if (!node) return;
+  node.textContent = text || "";
+  node.classList.toggle("is-error", tone === "error");
+  node.classList.toggle("is-ok", tone === "ok");
+}
+
+function releaseListUrls() {
+  albumListUrls.forEach((url) => URL.revokeObjectURL(url));
+  albumListUrls = [];
+}
+
+function listUrlFor(photo) {
+  const url = photoSourceFor(photo);
+  if (url.indexOf("blob:") === 0) albumListUrls.push(url);
+  return url;
+}
+
+function resultUrlFor(photo) {
+  if (albumResultUrl && albumResultUrl.indexOf("blob:") === 0) URL.revokeObjectURL(albumResultUrl);
+  albumResultUrl = photoSourceFor(photo);
+  return albumResultUrl;
+}
+
+function hidePhotoResult() {
+  if (!elements.photoResult) return;
+  elements.photoResult.hidden = true;
+  elements.photoResultImage.removeAttribute("src");
+  if (albumResultUrl && albumResultUrl.indexOf("blob:") === 0) URL.revokeObjectURL(albumResultUrl);
+  albumResultUrl = null;
+}
+
+function showPhotoResult(photo) {
+  elements.photoResultImage.src = resultUrlFor(photo);
+  elements.photoResultImage.alt = photo.name;
+  elements.photoResultName.textContent = photo.name;
+  elements.photoResultDate.textContent = new Date(photo.createdAt).toLocaleDateString("zh-CN");
+  elements.photoResult.hidden = false;
+}
+
+// 只有名字完全对上才给看图
+async function runPhotoSearch(event) {
+  if (event) event.preventDefault();
+  const keyword = elements.photoSearchInput.value.trim();
+  if (!keyword) {
+    hidePhotoResult();
+    setAlbumMessage(elements.photoMessage, "先输入照片名字。", "error");
+    return;
+  }
+  try {
+    const photos = await albumAll();
+    const match = photos.find((photo) => photo.name.trim().toLowerCase() === keyword.toLowerCase());
+    if (!match) {
+      hidePhotoResult();
+      setAlbumMessage(elements.photoMessage, "没有叫「" + keyword + "」的照片。", "error");
+      return;
+    }
+    showPhotoResult(match);
+    setAlbumMessage(elements.photoMessage, "", "");
+  } catch (error) {
+    hidePhotoResult();
+    setAlbumMessage(elements.photoMessage, "相册读取失败，换个浏览器或关闭无痕模式再试。", "error");
+  }
+}
+
+function hidePhotoAdminBody() {
+  elements.photoGate.hidden = false;
+  elements.photoAdminBody.hidden = true;
+}
+
+async function showPhotoAdminBody() {
+  elements.photoGate.hidden = true;
+  elements.photoAdminBody.hidden = false;
+  await renderAlbumList();
+}
+
+function openPhotoAdmin() {
+  setAlbumMessage(elements.photoGateMessage, "");
+  setAlbumMessage(elements.photoUploadMessage, "");
+  setAlbumMessage(elements.photoPassMessage, "");
+  elements.photoPassInput.value = "";
+  if (!elements.photoAdminDialog.open) elements.photoAdminDialog.showModal();
+  updatePhotoStorageHint();
+  if (albumUnlocked) {
+    showPhotoAdminBody();
+  } else {
+    hidePhotoAdminBody();
+    window.setTimeout(() => elements.photoPassInput.focus(), 80);
+  }
+}
+
+async function renderAlbumList() {
+  const list = elements.photoList;
+  if (!list) return;
+  releaseListUrls();
+  list.innerHTML = "";
+  let photos = [];
+  try {
+    photos = await albumAll();
+  } catch (error) {
+    list.innerHTML = '<p class="photo-empty">相册读取失败。</p>';
+    return;
+  }
+  photos.sort((a, b) => b.createdAt - a.createdAt);
+  updatePhotoStorageHint();
+  if (!photos.length) {
+    list.innerHTML = '<p class="photo-empty">还没有照片。上传一张，并给它起个名字。</p>';
+    return;
+  }
+  photos.forEach((photo) => {
+    const item = document.createElement("div");
+    item.className = "photo-item";
+
+    const image = document.createElement("img");
+    image.src = listUrlFor(photo);
+    image.alt = photo.name;
+    item.appendChild(image);
+
+    const copy = document.createElement("div");
+    copy.className = "photo-item-copy";
+    const name = document.createElement("strong");
+    name.textContent = photo.name;
+    const meta = document.createElement("span");
+    meta.textContent = new Date(photo.createdAt).toLocaleString("zh-CN");
+    copy.appendChild(name);
+    copy.appendChild(meta);
+    item.appendChild(copy);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "photo-item-remove";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      if (!window.confirm("删除「" + photo.name + "」？删除后无法恢复。")) return;
+      try {
+        await albumRemove(photo.id);
+        await renderAlbumList();
+        if (elements.photoResultName.textContent === photo.name) hidePhotoResult();
+        setAlbumMessage(elements.photoUploadMessage, "已删除「" + photo.name + "」。", "ok");
+      } catch (error) {
+        setAlbumMessage(elements.photoUploadMessage, "删除失败，请重试。", "error");
+      }
+    });
+    item.appendChild(remove);
+
+    list.appendChild(item);
+  });
+}
+
+async function submitPhotoUpload(event) {
+  event.preventDefault();
+  const name = elements.photoNameInput.value.trim();
+  const file = elements.photoFileInput.files[0];
+  if (!name) {
+    setAlbumMessage(elements.photoUploadMessage, "先给这张照片起个名字。", "error");
+    return;
+  }
+  if (!file) {
+    setAlbumMessage(elements.photoUploadMessage, "选一张图片。", "error");
+    return;
+  }
+  if (!file.type.startsWith("image/")) {
+    setAlbumMessage(elements.photoUploadMessage, "这个文件不是图片。", "error");
+    return;
+  }
+  if (file.size > ALBUM_MAX_SIZE) {
+    setAlbumMessage(elements.photoUploadMessage, "图片超过 12MB，换一张小一点的。", "error");
+    return;
+  }
+  try {
+    const existing = await albumAll();
+    if (existing.some((photo) => photo.name.trim().toLowerCase() === name.toLowerCase())) {
+      setAlbumMessage(elements.photoUploadMessage, "已经有同名的照片，换个名字或者先删掉旧的。", "error");
+      return;
+    }
+    await albumPut({
+      id: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
+      name,
+      createdAt: Date.now(),
+      type: file.type,
+      size: file.size,
+      blob: file
+    });
+    elements.photoNameInput.value = "";
+    elements.photoFileInput.value = "";
+    setAlbumMessage(elements.photoUploadMessage, "已保存「" + name + "」。", "ok");
+    await renderAlbumList();
+  } catch (error) {
+    const quota = error && (error.name === "QuotaExceededError" || String(error.message).indexOf("quota") >= 0);
+    setAlbumMessage(
+      elements.photoUploadMessage,
+      quota
+        ? "浏览器的本地空间放不下了，删掉几张再试。"
+        : "保存失败：" + (error && error.message ? error.message : "未知原因"),
+      "error"
+    );
+  }
+}
+
+function submitPhotoGate(event) {
+  event.preventDefault();
+  const input = elements.photoPassInput.value.trim();
+  if (!input) {
+    setAlbumMessage(elements.photoGateMessage, "请输入密码。", "error");
+    return;
+  }
+  if (input !== readAlbumPass()) {
+    setAlbumMessage(elements.photoGateMessage, "密码不对。", "error");
+    elements.photoPassInput.select();
+    return;
+  }
+  albumUnlocked = true;
+  setAlbumMessage(elements.photoGateMessage, "", "");
+  elements.photoPassInput.value = "";
+  showPhotoAdminBody();
+}
+
+function submitPhotoPass(event) {
+  event.preventDefault();
+  const current = elements.photoOldPass.value.trim();
+  const next = elements.photoNewPass.value.trim();
+  if (current !== readAlbumPass()) {
+    setAlbumMessage(elements.photoPassMessage, "当前密码不对。", "error");
+    return;
+  }
+  if (next.length < 4 || next.length > 20) {
+    setAlbumMessage(elements.photoPassMessage, "新密码要 4 到 20 位。", "error");
+    return;
+  }
+  writeAlbumPass(next);
+  elements.photoOldPass.value = "";
+  elements.photoNewPass.value = "";
+  elements.photoPassForm.hidden = true;
+  setAlbumMessage(elements.photoPassMessage, "密码已更新，下次用新密码进入。", "ok");
+}
+
+function initPhotoAlbum() {
+  if (!elements.photoPanel) return;
+
+  elements.photoSearchForm.addEventListener("submit", runPhotoSearch);
+  elements.photoAdminEntry.addEventListener("click", openPhotoAdmin);
+  elements.photoGateForm.addEventListener("submit", submitPhotoGate);
+  elements.photoUploadForm.addEventListener("submit", submitPhotoUpload);
+  elements.photoPassForm.addEventListener("submit", submitPhotoPass);
+
+  elements.photoChangePassButton.addEventListener("click", () => {
+    elements.photoPassForm.hidden = !elements.photoPassForm.hidden;
+    setAlbumMessage(elements.photoPassMessage, "");
+    if (!elements.photoPassForm.hidden) elements.photoOldPass.focus();
+  });
+
+  elements.photoLockButton.addEventListener("click", () => {
+    albumUnlocked = false;
+    hidePhotoAdminBody();
+    setAlbumMessage(elements.photoGateMessage, "已退出管理。", "ok");
+  });
+
+  elements.photoAdminDialog.addEventListener("close", () => {
+    releaseListUrls();
+    setAlbumMessage(elements.photoGateMessage, "");
+    setAlbumMessage(elements.photoUploadMessage, "");
+  });
+
+  // 切到别的设施时收起相册，避免残留上一张图
+  elements.photoSearchInput.addEventListener("input", () => {
+    if (!elements.photoSearchInput.value.trim()) {
+      hidePhotoResult();
+      setAlbumMessage(elements.photoMessage, "", "");
+    }
+  });
+}
 
 function init() {
   renderProfile();
   renderSites();
   renderJournalMeta();
   bindEvents();
+  initPhotoAlbum();
   loadBundledMusic();
   applyDarkness(state.darkness, false);
   renderWeatherStatus(state.weather);
@@ -216,23 +745,11 @@ function init() {
   clockTimer = window.setInterval(updateLocalClock, 30000);
   initThreeWorlds();
   animateWorlds();
-  if (state.location) {
-    refreshWeather();
-  } else {
-    requestCurrentLocation(true);
-  }
+  if (state.location) refreshWeather(false);
   restoreMusicFiles();
   weatherRefreshTimer = window.setInterval(() => {
-    if (state.location) refreshWeather(undefined, false);
-  }, 5 * 60 * 1000);
-  locationRefreshTimer = window.setInterval(() => {
-    if (state.location?.source === "current") requestCurrentLocation(true);
-  }, 20 * 60 * 1000);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState !== "visible") return;
-    updateLocalClock();
-    if (state.location) refreshWeather(undefined, false);
-  });
+    if (state.location) refreshWeather(state.location, false);
+  }, 10 * 60 * 1000);
 }
 
 function encodeState(payload) {
@@ -271,11 +788,12 @@ function readCarriedState() {
 }
 
 function loadState() {
+  const remembered = recallPlace();
   const fallback = {
     profile: { ...defaultProfile },
     notes: {},
     darkness: DEFAULT_DARKNESS,
-    location: null,
+    location: remembered,
     weather: null
   };
 
@@ -315,7 +833,7 @@ function loadState() {
       });
     }
 
-    const location = normalizeSavedLocation(saved.location);
+    const location = normalizeSavedLocation(saved.location) || remembered;
     const weather = normalizeSavedWeather(saved.weather);
 
     return {
@@ -346,10 +864,7 @@ function normalizeSavedLocation(location) {
     detail: cleanString(location.detail, ""),
     latitude,
     longitude,
-    timezone: cleanString(location.timezone, "auto"),
-    source: location.source === "current" || location.source === "city"
-      ? location.source
-      : null
+    timezone: cleanString(location.timezone, "auto")
   };
 }
 
@@ -364,20 +879,45 @@ function normalizeSavedWeather(weather) {
     feelsLike: Number(weather.feelsLike),
     humidity: Number(weather.humidity),
     wind: Number(weather.wind),
-    isDay: parseDaylight(weather.isDay),
-    sunrise: cleanString(weather.sunrise, ""),
-    sunset: cleanString(weather.sunset, ""),
+    isDay: Boolean(weather.isDay),
     observedAt: Number(weather.observedAt) || Date.now()
   };
 }
 
-function parseDaylight(value) {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value === 1;
-  if (typeof value === "string") {
-    return value === "1" || value.toLowerCase() === "true";
+
+// 记住上次的城市：localStorage 会随预览端口变化失效，cookie 则按域名共享，能跨端口留住
+const PLACE_COOKIE = "star-isle-place";
+
+function rememberPlace(location) {
+  const normalized = normalizeSavedLocation(location);
+  if (!normalized) return;
+  try {
+    const value = encodeURIComponent(JSON.stringify(normalized));
+    document.cookie = PLACE_COOKIE + "=" + value + "; max-age=" + 60 * 60 * 24 * 180 + "; path=/; SameSite=Lax";
+  } catch (error) {
+    // file:// 下 cookie 可能不可用，忽略即可，localStorage 仍是主存储
   }
-  return false;
+}
+
+function recallPlace() {
+  try {
+    const entry = document.cookie
+      .split("; ")
+      .find((item) => item.startsWith(PLACE_COOKIE + "="));
+    if (!entry) return null;
+    const raw = decodeURIComponent(entry.slice(PLACE_COOKIE.length + 1));
+    return normalizeSavedLocation(JSON.parse(raw));
+  } catch (error) {
+    return null;
+  }
+}
+
+function forgetPlace() {
+  try {
+    document.cookie = PLACE_COOKIE + "=; max-age=0; path=/";
+  } catch (error) {
+    // 忽略
+  }
 }
 
 function persistState(payload) {
@@ -484,7 +1024,15 @@ function bindEvents() {
   document.getElementById("decorateButton").addEventListener("click", openProfile);
   document.getElementById("journalButton").addEventListener("click", openJournal);
   elements.weatherButton.addEventListener("click", openWeatherDialog);
-  elements.useLocationButton.addEventListener("click", () => requestCurrentLocation());
+  elements.useLocationButton.addEventListener("click", requestCurrentLocation);
+
+  if (elements.weatherMemoryClear) {
+    elements.weatherMemoryClear.addEventListener("click", () => {
+      forgetPlace();
+      renderWeatherMemory();
+      showToast("已忘记这个城市，下次打开需要重新选择");
+    });
+  }
   elements.citySearchForm.addEventListener("submit", handleCitySearch);
   elements.cityResults.addEventListener("click", (event) => {
     const result = event.target.closest("[data-city-index]");
@@ -615,8 +1163,8 @@ function bindEvents() {
 function applyDarkness(value, persist = false) {
   const darkness = Math.min(100, Math.max(0, Number(value) || 0));
   state.darkness = darkness;
-  const baseExposure = 0.55 + Math.pow(1 - darkness / 100, 0.8) * 0.75;
-  const exposure = baseExposure * (state.weather?.isDay ? 1.16 : 1);
+  const baseExposure = 0.6 + Math.pow(1 - darkness / 100, 0.9) * 0.56;
+  const exposure = baseExposure * (state.weather?.isDay ? 1.0 : 1);
   const photoExposure = exposure * 0.63;
 
   document.documentElement.style.setProperty("--scene-exposure", exposure.toFixed(3));
@@ -632,11 +1180,24 @@ function applyDarkness(value, persist = false) {
   if (persist) saveState();
 }
 
+function renderWeatherMemory() {
+  if (!elements.weatherMemory) return;
+  const remembered = state.location || recallPlace();
+  if (!remembered) {
+    elements.weatherMemory.hidden = true;
+    return;
+  }
+  const label = remembered.detail
+    ? remembered.name + " · " + remembered.detail
+    : remembered.name;
+  elements.weatherMemoryPlace.textContent = label;
+  elements.weatherMemory.hidden = false;
+}
+
 function openWeatherDialog() {
   elements.weatherDialog.showModal();
-  elements.weatherMessage.textContent = state.location
-    ? ""
-    : "请允许浏览器使用当前位置，或在下方搜索城市。";
+  elements.weatherMessage.textContent = "";
+  renderWeatherMemory();
   if (state.location && state.weather) {
     renderWeatherDetails(state.location, state.weather);
   }
@@ -645,15 +1206,15 @@ function openWeatherDialog() {
   }, 80);
 }
 
-async function requestCurrentLocation(automatic = false) {
+async function requestCurrentLocation() {
   if (!navigator.geolocation) {
     elements.weatherMessage.textContent = "这个浏览器不支持定位，请直接搜索城市。";
-    if (!automatic) elements.citySearchInput.focus();
+    elements.citySearchInput.focus();
     return;
   }
 
   elements.useLocationButton.disabled = true;
-  if (!automatic) elements.weatherMessage.textContent = "正在获取当前位置…";
+  elements.weatherMessage.textContent = "正在获取当前位置…";
 
   try {
     const position = await new Promise((resolve, reject) => {
@@ -684,15 +1245,14 @@ async function requestCurrentLocation(automatic = false) {
       detail,
       latitude: position.coords.latitude,
       longitude: position.coords.longitude,
-      timezone: "auto",
-      source: "current"
-    }, !automatic);
+      timezone: "auto"
+    });
   } catch (error) {
     const denied = error?.code === 1;
     elements.weatherMessage.textContent = denied
       ? "没有获得定位权限，可以在下方搜索城市。"
       : "暂时无法获取当前位置，请直接搜索城市。";
-    if (!automatic) elements.citySearchInput.focus();
+    elements.citySearchInput.focus();
   } finally {
     elements.useLocationButton.disabled = false;
   }
@@ -720,8 +1280,7 @@ async function handleCitySearch(event) {
       detail: [result.admin1, result.country].filter(Boolean).join(" · "),
       latitude: result.latitude,
       longitude: result.longitude,
-      timezone: result.timezone || "auto",
-      source: "city"
+      timezone: result.timezone || "auto"
     }));
 
     if (!citySearchResults.length) {
@@ -743,12 +1302,12 @@ async function handleCitySearch(event) {
   }
 }
 
-async function selectWeatherLocation(location, showFeedback = true) {
-  const success = await refreshWeather(location, showFeedback);
+async function selectWeatherLocation(location) {
+  const success = await refreshWeather(location);
   if (success) {
     elements.cityResults.innerHTML = "";
     elements.citySearchInput.value = "";
-    if (elements.weatherDialog.open) elements.weatherDialog.close();
+    elements.weatherDialog.close();
   }
 }
 
@@ -763,8 +1322,6 @@ async function refreshWeather(location = state.location, showFeedback = true) {
       latitude: String(location.latitude),
       longitude: String(location.longitude),
       current: "temperature_2m,apparent_temperature,weather_code,is_day,wind_speed_10m,relative_humidity_2m",
-      daily: "sunrise,sunset",
-      forecast_days: "1",
       timezone: "auto"
     });
     const data = await fetchJson(
@@ -772,30 +1329,27 @@ async function refreshWeather(location = state.location, showFeedback = true) {
       weatherAbortController.signal
     );
     const current = data.current;
-    const sunrise = data.daily?.sunrise?.[0] || "";
-    const sunset = data.daily?.sunset?.[0] || "";
     const weather = {
       code: Number(current.weather_code),
       temperature: Number(current.temperature_2m),
       feelsLike: Number(current.apparent_temperature),
       humidity: Number(current.relative_humidity_2m),
       wind: Number(current.wind_speed_10m),
-      isDay: getDaylightAt(current.time, sunrise, sunset, current.is_day),
-      sunrise,
-      sunset,
+      isDay: Boolean(current.is_day),
       observedAt: Date.now(),
       timezone: data.timezone || location.timezone || "auto"
     };
 
     state.location = {
       ...location,
-      timezone: weather.timezone,
-      source: location.source || state.location?.source || null
+      timezone: weather.timezone
     };
     state.weather = weather;
+    rememberPlace(state.location);
     saveState();
     renderWeatherStatus(weather);
     renderWeatherDetails(state.location, weather);
+    renderWeatherMemory();
     updateLocalClock();
     if (showFeedback) showToast(`已同步 ${state.location.name} 的天气`);
     return true;
@@ -812,28 +1366,15 @@ async function refreshWeather(location = state.location, showFeedback = true) {
 }
 
 async function fetchJson(url, signal) {
-  const response = await fetch(url, { signal, cache: "no-store" });
+  const response = await fetch(url, { signal });
   if (!response.ok) throw new Error(`Request failed: ${response.status}`);
   return response.json();
-}
-
-function getDaylightAt(localDateTime, sunrise, sunset, fallback) {
-  if (
-    typeof localDateTime === "string" &&
-    typeof sunrise === "string" &&
-    typeof sunset === "string" &&
-    localDateTime.slice(0, 10) === sunrise.slice(0, 10) &&
-    sunrise.slice(0, 10) === sunset.slice(0, 10)
-  ) {
-    return localDateTime >= sunrise && localDateTime <= sunset;
-  }
-  return parseDaylight(fallback);
 }
 
 function weatherMeta(code, isDay) {
   if (code === 0) return { key: "clear", label: isDay ? "晴朗" : "晴夜", icon: isDay ? "☀" : "☾" };
   if (code === 1) return { key: "clear", label: "大致晴朗", icon: isDay ? "☀" : "☾" };
-  if (code === 2) return { key: "partly", label: "局部多云", icon: isDay ? "⛅" : "☁" };
+  if (code === 2) return { key: "partly", label: "局部多云", icon: "◐" };
   if (code === 3) return { key: "cloudy", label: "阴", icon: "☁" };
   if (code === 45 || code === 48) return { key: "fog", label: "有雾", icon: "≋" };
   if ([51, 53, 55, 56, 57].includes(code)) return { key: "rain", label: "细雨", icon: "☂" };
@@ -845,7 +1386,6 @@ function weatherMeta(code, isDay) {
 
 function renderWeatherStatus(weather) {
   if (!weather) return;
-  weather.isDay = resolveWeatherDaylight(weather) ?? weather.isDay;
   const meta = weatherMeta(weather.code, weather.isDay);
   elements.weatherSymbol.textContent = meta.icon;
   elements.weatherPlace.textContent = state.location?.name || "当前位置";
@@ -859,33 +1399,8 @@ function renderWeatherStatus(weather) {
   elements.periodLabel.textContent = weather.isDay
     ? "STAR ISLE · DAYLIGHT"
     : "STAR ISLE · AFTER HOURS";
+  applySkyPeriod(Boolean(weather.isDay));
   applyDarkness(state.darkness, false);
-}
-
-function resolveWeatherDaylight(weather) {
-  if (!weather?.sunrise || !weather?.sunset) return null;
-  const timeZone = state.location?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const localDateTime = getLocalDateTime(timeZone);
-  if (!localDateTime) return null;
-  return getDaylightAt(localDateTime, weather.sunrise, weather.sunset, weather.isDay);
-}
-
-function getLocalDateTime(timeZone) {
-  try {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false
-    }).formatToParts(new Date());
-    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-    return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
-  } catch {
-    return null;
-  }
 }
 
 function renderWeatherDetails(location, weather) {
@@ -907,6 +1422,21 @@ function renderWeatherDetails(location, weather) {
   elements.weatherWind.textContent = `${Math.round(weather.wind)} km/h`;
 }
 
+function isDaytimeNow() {
+  if (state.weather && typeof state.weather.isDay === "boolean") return state.weather.isDay;
+  try {
+    const timeZone = state.location?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const hour = Number(new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      hour: "2-digit",
+      hour12: false
+    }).format(new Date()));
+    return hour >= 6 && hour < 18;
+  } catch (error) {
+    return false;
+  }
+}
+
 function updateLocalClock() {
   const timeZone = state.location?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
@@ -923,14 +1453,7 @@ function updateLocalClock() {
     });
   }
 
-  if (state.weather) {
-    const isDay = resolveWeatherDaylight(state.weather);
-    if (isDay !== null && isDay !== state.weather.isDay) {
-      state.weather.isDay = isDay;
-      renderWeatherStatus(state.weather);
-      renderWeatherDetails(state.location, state.weather);
-    }
-  } else {
+  if (!state.weather) {
     try {
       const hour = Number(new Intl.DateTimeFormat("en-GB", {
         timeZone,
@@ -942,6 +1465,7 @@ function updateLocalClock() {
       elements.periodLabel.textContent = day
         ? "STAR ISLE · DAYLIGHT"
         : "STAR ISLE · AFTER HOURS";
+      applySkyPeriod(day);
     } catch {
       // Keep the default period if the browser rejects the time zone.
     }
@@ -1479,6 +2003,14 @@ function openFacility(id) {
   elements.saveState.textContent = note ? "已保存，可以继续修改" : "";
   elements.clearBriefButton.hidden = !note;
   elements.cabinHint.hidden = id !== "ferris";
+  const albumFacility = id === "carousel";
+  elements.photoPanel.hidden = !albumFacility;
+  if (albumFacility) {
+    elements.photoSearchInput.value = "";
+    updatePhotoStorageHint();
+    hidePhotoResult();
+    setAlbumMessage(elements.photoMessage, "", "");
+  }
   elements.focusVisual.classList.remove("music-playing");
   elements.focusCopy.scrollTop = 0;
   updateBriefCount();
@@ -1498,6 +2030,7 @@ function closeFacility() {
   elements.overviewView.classList.remove("is-hidden");
   elements.overviewView.setAttribute("aria-hidden", "false");
   elements.appShell.classList.remove("focus-open");
+  if (elements.photoPanel) elements.photoPanel.hidden = true;
   activeFacilityId = null;
   activeModel = null;
   selectedCabinIndex = null;
@@ -1606,6 +2139,113 @@ function showToast(message) {
 
 /* ---------- Three.js scene ---------- */
 
+
+// 昼夜切换：天空贴图、雾、太阳与环境反射一起换，白天不再挂着月亮和星星
+var skyPeriod = "night";
+
+var skyApplied = false;
+var skyKind = "clear";
+var skyCode = null;
+
+// 每种天气对应的天空配方：云量、雾浓度、太阳与月亮是否露面
+var SKY_PRESETS = {
+  clear: { clouds: 6, cloudAlpha: 0.5, fogDay: 0.0038, fogNight: 0.0095, sun: 1, moon: true },
+  partly: { clouds: 15, cloudAlpha: 0.55, fogDay: 0.0042, fogNight: 0.0102, sun: 0.82, moon: true },
+  cloudy: { clouds: 24, cloudAlpha: 0.62, fogDay: 0.0052, fogNight: 0.0112, sun: 0, moon: false },
+  fog: { clouds: 10, cloudAlpha: 0.32, fogDay: 0.0135, fogNight: 0.0155, sun: 0, moon: false },
+  rain: { clouds: 26, cloudAlpha: 0.66, fogDay: 0.0065, fogNight: 0.0125, sun: 0, moon: false },
+  snow: { clouds: 22, cloudAlpha: 0.6, fogDay: 0.0075, fogNight: 0.013, sun: 0, moon: false },
+  storm: { clouds: 28, cloudAlpha: 0.72, fogDay: 0.0085, fogNight: 0.014, sun: 0, moon: false }
+};
+
+// 当前天气归类；没有天气数据时按晴朗处理
+function currentSkyKind() {
+  if (!state.weather) return "clear";
+  return weatherMeta(state.weather.code, state.weather.isDay).key;
+}
+
+// 昼夜 + 天气一起决定天空：贴图、太阳、月亮、云量、雾、光照、调色
+function applySkyPeriod(isDay) {
+  const kind = currentSkyKind();
+  const preset = SKY_PRESETS[kind] || SKY_PRESETS.clear;
+  const period = isDay ? "day" : "night";
+  const code = state.weather ? state.weather.code : 61;
+  if (skyApplied && period === skyPeriod && kind === skyKind && code === skyCode) return;
+  skyPeriod = period;
+  skyKind = kind;
+  skyCode = code;
+  document.documentElement.dataset.skyPeriod = period;
+  document.documentElement.dataset.skyKind = kind;
+
+  const overcast = kind === "cloudy" || kind === "fog" || kind === "rain" || kind === "snow" || kind === "storm";
+
+  [overviewWorld, focusWorld].forEach((world) => {
+    if (!world) return;
+    if (world.skyDome) {
+      world.skyDome.material.map = isDay ? getDaySkyTexture(overcast) : getSkyDomeTexture();
+      world.skyDome.material.color.setHex(isDay ? 0xffffff : overcast ? 0x828c9e : 0xffffff);
+      world.skyDome.material.needsUpdate = true;
+    }
+    if (world.moonGroup) world.moonGroup.visible = !isDay && preset.moon;
+    if (world.sunGroup) world.sunGroup.visible = Boolean(isDay) && preset.sun > 0;
+    if (world.cloudLayer) {
+      const visibleCount = Math.min(world.cloudLayer.children.length, preset.clouds);
+      const tint = isDay ? (overcast ? 0xc7d0d6 : 0xffffff) : overcast ? 0x4a5464 : 0x5b6577;
+      world.cloudLayer.children.forEach((cloud, index) => {
+        cloud.visible = index < visibleCount;
+        cloud.children.forEach((puff) => {
+          puff.material.color.setHex(tint);
+          puff.material.opacity = preset.cloudAlpha * (isDay ? 1 : 0.55);
+        });
+      });
+      world.cloudLayer.visible = visibleCount > 0;
+    }
+    const wet = kind === "rain" || kind === "storm";
+    (world.scene.userData.groundMaterials || []).forEach((material) => {
+      material.roughness = wet ? 0.62 : 0.95;
+      material.metalness = wet ? 0.12 : 0.02;
+      material.color.setHex(wet ? 0xb9a68d : 0xffe0b8);
+    });
+
+    if (world.rain) {
+      const rainy = kind === "rain" || kind === "storm";
+      const count = rainy ? Math.min(world.rain.maxCount, rainCountForWeather(code)) : 0;
+      world.rain.lines.visible = count > 0;
+      world.rain.geometry.setDrawRange(0, count * 2);
+      world.rain.lines.material.opacity = isDay ? 0.42 : 0.62;
+    }
+    applyEnvironment(world.scene, world.renderer, isDay);
+  });
+
+  if (!overviewWorld) return;
+
+  const fogColor = isDay
+    ? overcast ? 0xb6c1c8 : 0xb8cfe0
+    : overcast ? 0x2b3444 : 0x243049;
+  overviewWorld.scene.fog.color.setHex(fogColor);
+  overviewWorld.scene.fog.density = isDay ? preset.fogDay : preset.fogNight;
+
+  const lights = overviewWorld.lights;
+  if (!lights) return;
+  lights.sun.color.setHex(isDay ? (overcast ? 0xe8eef2 : 0xfff3e0) : 0xc2d3e6);
+  lights.sun.intensity = isDay ? (preset.sun > 0 ? 1.15 * preset.sun : 0.36) : 0.8;
+  lights.sun.position.set(isDay ? 16 : -12, isDay ? 30 : 24, isDay ? 24 : 15);
+  lights.hemi.color.setHex(isDay ? (overcast ? 0x9fb0bf : 0xa9c9e2) : 0x3c4a66);
+  lights.hemi.groundColor.setHex(isDay ? 0x6b5a42 : 0x5c3616);
+  lights.hemi.intensity = isDay ? (overcast ? 0.6 : 0.72) : 0.42;
+  lights.ambient.color.setHex(isDay ? (overcast ? 0x8c99a4 : 0x93a6b8) : 0x4a2e1a);
+  lights.ambient.intensity = isDay ? 0.3 : 0.2;
+  lights.fairGlow.intensity = isDay ? 0.1 : 0.72;
+  lights.plazaGlow.intensity = isDay ? 1.1 : 4.2;
+
+  // 白天的画布调色单独一档：更饱和、更高对比，避免一片奶白
+  const root = document.documentElement.style;
+  root.setProperty("--scene-saturation", isDay ? (overcast ? 1.16 : 1.34) : "1.18");
+  root.setProperty("--scene-contrast", isDay ? 1.1 : "1.03");
+  root.setProperty("--scene-hue", isDay ? "-2deg" : "-4deg");
+  skyApplied = true;
+}
+
 function initThreeWorlds() {
   if (!window.THREE) {
     elements.overviewCanvas.hidden = true;
@@ -1620,6 +2260,67 @@ function initThreeWorlds() {
   hydrateCarouselHorses().catch((error) => {
     console.warn("Carousel horse model could not be loaded.", error);
   });
+
+  applySkyPeriod(isDaytimeNow());
+}
+
+var nightEnvTexture = null;
+
+function getNightEnvironment() {
+  if (nightEnvTexture) return nightEnvTexture;
+  const width = 512;
+  const height = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+
+  // 天顶深蓝 → 地平线暖橙 → 地面暗褐，给金属一件可反射的"夜空"
+  const sky = context.createLinearGradient(0, 0, 0, height);
+  sky.addColorStop(0, "#0a1226");
+  sky.addColorStop(0.42, "#152741");
+  sky.addColorStop(0.5, "#3d2c26");
+  sky.addColorStop(0.55, "#8a4d22");
+  sky.addColorStop(0.63, "#331f14");
+  sky.addColorStop(1, "#0c0806");
+  context.fillStyle = sky;
+  context.fillRect(0, 0, width, height);
+
+  // 地平线上的几团灯，让反射里有暖色亮点
+  for (let index = 0; index < 8; index += 1) {
+    const cx = (index + 0.5) * (width / 8) + (Math.random() - 0.5) * 30;
+    const radius = 16 + Math.random() * 26;
+    const glow = context.createRadialGradient(cx, height * 0.53, 0, cx, height * 0.53, radius);
+    glow.addColorStop(0, "rgba(255,190,120,0.85)");
+    glow.addColorStop(0.4, "rgba(255,150,70,0.28)");
+    glow.addColorStop(1, "rgba(255,140,60,0)");
+    context.fillStyle = glow;
+    context.fillRect(cx - radius, height * 0.53 - radius, radius * 2, radius * 2);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  texture.encoding = THREE.sRGBEncoding;
+  nightEnvTexture = texture;
+  return texture;
+}
+
+function applyEnvironment(scene, renderer, isDay) {
+  scene.userData.envCache = scene.userData.envCache || {};
+  const key = isDay ? "day" : "night";
+  if (scene.userData.envCache[key]) {
+    scene.environment = scene.userData.envCache[key];
+    return;
+  }
+  const source = isDay ? getDayEnvironment() : getNightEnvironment();
+  try {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.userData.envCache[key] = pmrem.fromEquirectangular(source).texture;
+    scene.environment = scene.userData.envCache[key];
+    pmrem.dispose();
+  } catch (error) {
+    scene.environment = source;
+  }
 }
 
 function createRenderer(canvas) {
@@ -1630,10 +2331,10 @@ function createRenderer(canvas) {
     powerPreference: "high-performance"
   });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.8));
-  renderer.setClearColor(0x06181a, 0);
+  renderer.setClearColor(0x081a2e, 0);
   renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.96;
+  renderer.toneMappingExposure = 0.98;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   return renderer;
@@ -1642,18 +2343,24 @@ function createRenderer(canvas) {
 function createOverviewWorld() {
   const renderer = createRenderer(elements.overviewCanvas);
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x071a1c, 0.022);
-  const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 150);
-  const orbit = { yaw: 0.55, pitch: 0.6, distance: 43, targetX: 0, targetY: 1.9, targetZ: 4 };
+  scene.fog = new THREE.FogExp2(0x243049, 0.0098);
+  applyEnvironment(scene, renderer);
+  const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 420);
+  const orbit = { yaw: 0.55, pitch: 0.22, distance: 52, targetX: 0, targetY: 2.4, targetZ: 2 };
   const rides = {};
   const rideAnchors = {};
   const markers = [];
 
-  addSky(scene);
+  const skyDome = addSkyDome(scene);
+  const moonGroup = addMoon(scene, -42, 22.5, -156, 6.6);
+  const sunGroup = addSun(scene, -88, 21, -80, 6.2);
+  const cloudLayer = addCloudLayer(scene, 28);
+  const rain = addRain(scene, 3200, 150);
   addGround(scene);
   addPaths(scene);
-  addBoundaryHedge(scene);
+  addOuterRoad(scene);
   addScenery(scene);
+  addGroundDressing(scene);
 
   const gate = buildEntranceGate();
   gate.group.position.set(0, 0, 16.5);
@@ -1661,21 +2368,29 @@ function createOverviewWorld() {
   gate.group.scale.setScalar(1.18);
   scene.add(gate.group);
 
-  const light = new THREE.DirectionalLight(0xc7d2c0, 1.45);
-  light.position.set(-12, 24, 15);
-  light.castShadow = true;
-  light.shadow.mapSize.set(1024, 1024);
-  light.shadow.camera.left = -35;
-  light.shadow.camera.right = 35;
-  light.shadow.camera.top = 35;
-  light.shadow.camera.bottom = -35;
-  scene.add(light);
-  scene.add(new THREE.HemisphereLight(0x688a7e, 0x041011, 0.6));
-  scene.add(new THREE.AmbientLight(0x172b28, 0.26));
+  const sunLight = new THREE.DirectionalLight(0xc2d3e6, 0.8);
+  sunLight.position.set(-12, 24, 15);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(1024, 1024);
+  sunLight.shadow.camera.left = -35;
+  sunLight.shadow.camera.right = 35;
+  sunLight.shadow.camera.top = 35;
+  sunLight.shadow.camera.bottom = -35;
+  scene.add(sunLight);
 
-  const plazaGlow = new THREE.PointLight(0xcfb477, 1.35, 20, 2);
+  const hemiLight = new THREE.HemisphereLight(0x3c4a66, 0x5c3616, 0.42);
+  scene.add(hemiLight);
+  const ambientLight = new THREE.AmbientLight(0x4a2e1a, 0.2);
+  scene.add(ambientLight);
+
+  const fairGlow = new THREE.DirectionalLight(0xffa25a, 0.72);
+  fairGlow.position.set(6, 11, 34);
+  scene.add(fairGlow);
+
+  const plazaGlow = new THREE.PointLight(0xffb066, 4.2, 30, 2);
   plazaGlow.position.set(0, 5.5, 0);
   scene.add(plazaGlow);
+  addGlowHalo(scene, 0, 2.4, 0, 0xffb066, 12, 0.1);
 
   facilities.forEach((facility) => {
     const ride = buildRide(facility.id, 1.08);
@@ -1684,9 +2399,12 @@ function createOverviewWorld() {
       if (child.isMesh) child.receiveShadow = true;
     });
     scene.add(ride.group);
-    const rideGlow = new THREE.PointLight(facility.accent, 2.4, 10, 2);
-    rideGlow.position.set(facility.world[0], 2.4, facility.world[2]);
+    const rideGlow = new THREE.PointLight(facility.accent, 5.2, 16, 2);
+    rideGlow.position.set(facility.world[0], 2.9, facility.world[2]);
     scene.add(rideGlow);
+    addGlowHalo(scene, facility.world[0], 2.6, facility.world[2], facility.accent, 7.2, 0.2);
+    const ringRadius = { ferris: 4.5, coaster: 4.4, carousel: 4.05, slide: 3.9, garden: 4.0, pendulum: 3.9 }[facility.id] || 4.0;
+    addLightRing(scene, facility.world[0], facility.world[2], ringRadius, 30, 0xffc074, facility.accent, 0.5);
     rides[facility.id] = ride;
     rideAnchors[facility.id] = new THREE.Vector3(
       facility.world[0],
@@ -1703,6 +2421,12 @@ function createOverviewWorld() {
     camera,
     orbit,
     gate,
+    skyDome,
+    moonGroup,
+    sunGroup,
+    cloudLayer,
+    rain,
+    lights: { sun: sunLight, hemi: hemiLight, ambient: ambientLight, fairGlow, plazaGlow },
     rides,
     rideAnchors,
     markers,
@@ -1714,22 +2438,27 @@ function createOverviewWorld() {
 function createFocusWorld() {
   const renderer = createRenderer(elements.focusCanvas);
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0x071719, 0.014);
-  const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
+  scene.fog = new THREE.FogExp2(0x0a1a2a, 0.0095);
+  applyEnvironment(scene, renderer);
+  const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 420);
   const orbit = { yaw: -0.38, pitch: 0.18, distance: 16, targetX: 0, targetY: 3.5, targetZ: 0 };
   const rides = {};
 
-  addSky(scene, 170);
+  const skyDome = addSkyDome(scene);
+  const moonGroup = addMoon(scene, 8, 11.5, -64, 3.4);
+  const sunGroup = addSun(scene, 45, 9.5, -59, 3.8);
+  const cloudLayer = addCloudLayer(scene, 20);
+  const rain = addRain(scene, 1200, 80);
   const platform = new THREE.Mesh(
-    new THREE.CylinderGeometry(6.2, 6.5, 0.22, 64),
-    standardMaterial(0x0c1e1b, 0.7, 0.53)
+    new THREE.CylinderGeometry(7.2, 7.5, 0.22, 64),
+    standardMaterial(0x241d19, 0.62, 0.6)
   );
   platform.position.y = -0.15;
   platform.receiveShadow = true;
   scene.add(platform);
 
   const ring = new THREE.Mesh(
-    new THREE.RingGeometry(5.75, 5.86, 80),
+    new THREE.RingGeometry(6.75, 6.86, 80),
     new THREE.MeshBasicMaterial({ color: 0x9a7b4c, transparent: true, opacity: 0.52, side: THREE.DoubleSide })
   );
   ring.rotation.x = -Math.PI / 2;
@@ -1743,14 +2472,14 @@ function createFocusWorld() {
   key.shadow.mapSize.set(1024, 1024);
   scene.add(key, key.target);
 
-  const rim = new THREE.PointLight(0x6e969c, 1.6, 26);
+  const rim = new THREE.PointLight(0x7fb2dc, 1.8, 26);
   rim.position.set(8, 5, -8);
   scene.add(rim);
-  const warmRim = new THREE.PointLight(0x9b7550, 1.5, 22);
+  const warmRim = new THREE.PointLight(0xffb066, 3.4, 26);
   warmRim.position.set(-7, 4, 4);
   scene.add(warmRim);
-  scene.add(new THREE.HemisphereLight(0x6b887c, 0x02090a, 0.52));
-  scene.add(new THREE.AmbientLight(0x142723, 0.26));
+  scene.add(new THREE.HemisphereLight(0x3c4a66, 0x5a3414, 0.4));
+  scene.add(new THREE.AmbientLight(0x4a2e1a, 0.19));
 
   facilities.forEach((facility) => {
     const ride = buildRide(facility.id, facility.id === "ferris" ? 1.03 : 1.05);
@@ -1761,7 +2490,7 @@ function createFocusWorld() {
   });
 
   updateOrbitCamera({ camera, orbit, aspect: 1 });
-  return { renderer, scene, camera, orbit, rides, width: 1, height: 1 };
+  return { renderer, scene, camera, orbit, skyDome, moonGroup, sunGroup, cloudLayer, rain, rides, width: 1, height: 1 };
 }
 
 function resizeWorlds() {
@@ -1787,8 +2516,8 @@ function resizeRenderer(world) {
       world.isPortraitMode = portrait;
       world.camera.fov = portrait ? 64 : 35;
       world.orbit.yaw = portrait ? 0 : 0.55;
-      world.orbit.pitch = portrait ? 0.46 : 0.6;
-      world.orbit.distance = portrait ? 55 : 43;
+      world.orbit.pitch = portrait ? 0.4 : 0.22;
+      world.orbit.distance = portrait ? 56 : 52;
       updateOrbitCamera(world);
     }
   } else if (world === focusWorld) {
@@ -1820,6 +2549,475 @@ function fitFocusToModel(ride, world) {
   updateOrbitCamera(world);
 }
 
+var moonTexture = null;
+
+function getMoonTexture() {
+  if (moonTexture) return moonTexture;
+  const size = 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+
+  // 月面底色：中心偏亮，边缘略暗，模拟球面受光
+  const base = context.createRadialGradient(size * 0.42, size * 0.38, 0, size * 0.5, size * 0.5, size * 0.62);
+  base.addColorStop(0, "#f8efd6");
+  base.addColorStop(0.55, "#efe6cb");
+  base.addColorStop(0.85, "#d6cdb4");
+  base.addColorStop(1, "#b9b19c");
+  context.fillStyle = base;
+  context.fillRect(0, 0, size, size);
+
+  // 月海：大块低洼暗斑
+  for (let index = 0; index < 16; index += 1) {
+    const cx = size * (0.18 + Math.random() * 0.64);
+    const cy = size * (0.18 + Math.random() * 0.64);
+    const r = 26 + Math.random() * 62;
+    const patch = context.createRadialGradient(cx, cy, 0, cx, cy, r);
+    patch.addColorStop(0, "rgba(138, 134, 120, 0.62)");
+    patch.addColorStop(0.6, "rgba(138, 134, 120, 0.3)");
+    patch.addColorStop(1, "rgba(150, 146, 132, 0)");
+    context.fillStyle = patch;
+    context.beginPath();
+    context.arc(cx, cy, r, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  // 环形山：暗底 + 亮边
+  for (let index = 0; index < 30; index += 1) {
+    const cx = size * Math.random();
+    const cy = size * Math.random();
+    const r = 1.4 + Math.random() * 6.5;
+    context.fillStyle = "rgba(112, 108, 96, 0.36)";
+    context.beginPath();
+    context.arc(cx, cy, r, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = "rgba(255, 252, 235, 0.26)";
+    context.lineWidth = 0.9;
+    context.beginPath();
+    context.arc(cx, cy, r * 1.12, Math.PI * 1.05, Math.PI * 1.95);
+    context.stroke();
+  }
+
+  // 边缘压暗，避免看起来像一张平贴的圆片
+  const limb = context.createRadialGradient(size / 2, size / 2, size * 0.3, size / 2, size / 2, size * 0.5);
+  limb.addColorStop(0, "rgba(0, 0, 0, 0)");
+  limb.addColorStop(0.82, "rgba(46, 42, 36, 0.18)");
+  limb.addColorStop(1, "rgba(24, 22, 20, 0.5)");
+  context.fillStyle = limb;
+  context.fillRect(0, 0, size, size);
+
+  moonTexture = new THREE.CanvasTexture(canvas);
+  moonTexture.encoding = THREE.sRGBEncoding;
+  return moonTexture;
+}
+
+// 把月亮做成真正的球体，挂在很远的空中：转动视角时它会跟着透视移动，也会被建筑遮挡
+function addMoon(scene, x, y, z, radius) {
+  const group = new THREE.Group();
+
+  const moon = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 48, 32),
+    new THREE.MeshBasicMaterial({ map: getMoonTexture(), fog: false })
+  );
+  group.add(moon);
+
+  const halo = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: getHaloTexture(),
+      color: 0xffe9c2,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      opacity: 0.3,
+      fog: false
+    })
+  );
+  halo.scale.set(radius * 6.4, radius * 6.4, 1);
+  group.add(halo);
+
+  group.position.set(x, y, z);
+  scene.add(group);
+  return group;
+}
+
+var daySkyTextures = { clear: null, overcast: null };
+
+// 白天的天空：晴版是浅蓝，阴版是灰白；都用压扁的柔光云，不画星星
+function getDaySkyTexture(overcast) {
+  const key = overcast ? "overcast" : "clear";
+  if (daySkyTextures[key]) return daySkyTextures[key];
+  const width = 2048;
+  const height = 1024;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+
+  const sky = context.createLinearGradient(0, 0, 0, height);
+  if (overcast) {
+    sky.addColorStop(0, "#63757f");
+    sky.addColorStop(0.2, "#7b8c96");
+    sky.addColorStop(0.36, "#93a2ab");
+    sky.addColorStop(0.46, "#a9b7be");
+    sky.addColorStop(0.492, "#c2ccd2");
+    sky.addColorStop(0.5, "#ccd4d8");
+    sky.addColorStop(0.54, "#b3bab8");
+    sky.addColorStop(0.62, "#8f968d");
+    sky.addColorStop(1, "#6f746a");
+  } else {
+    sky.addColorStop(0, "#2e6fa8");
+    sky.addColorStop(0.2, "#4b8bbd");
+    sky.addColorStop(0.36, "#6ba2ca");
+    sky.addColorStop(0.46, "#4f8cc4");
+    sky.addColorStop(0.492, "#88b6d4");
+    sky.addColorStop(0.5, "#b6cfdf");
+    sky.addColorStop(0.54, "#b9c6c4");
+    sky.addColorStop(0.62, "#98a396");
+    sky.addColorStop(1, "#79806f");
+  }
+  context.fillStyle = sky;
+  context.fillRect(0, 0, width, height);
+
+  // 薄云：压扁的柔和椭圆，越靠地平线越淡
+  // 云朵：先定簇心，再叠几团小 puff，成团才好认
+  const clusterCount = overcast ? 26 : 15;
+  for (let cluster = 0; cluster < clusterCount; cluster += 1) {
+    const anchorX = Math.random() * width;
+    const anchorY = height * (0.4 + Math.random() * 0.088);
+    const puffs = 4 + Math.floor(Math.random() * 4);
+    for (let puff = 0; puff < puffs; puff += 1) {
+      const cx = anchorX + (Math.random() - 0.5) * 96;
+      const cy = anchorY + (Math.random() - 0.5) * 13;
+      const rx = 20 + Math.random() * 38;
+      const ry = rx * (0.42 + Math.random() * 0.3);
+      const alpha = (overcast ? 0.68 : 0.78) + Math.random() * 0.22;
+      const cloud = context.createRadialGradient(cx, cy, 0, cx, cy, rx);
+      cloud.addColorStop(0, "rgba(255, 255, 255, " + alpha + ")");
+      cloud.addColorStop(0.5, "rgba(250, 252, 255, " + alpha * 0.55 + ")");
+      cloud.addColorStop(1, "rgba(255, 255, 255, 0)");
+      context.fillStyle = cloud;
+      context.beginPath();
+      context.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      context.fill();
+    }
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.encoding = THREE.sRGBEncoding;
+  texture.anisotropy = 8;
+  daySkyTextures[key] = texture;
+  return texture;
+}
+
+var dayEnvTexture = null;
+
+// 白天的环境反射：上方亮蓝天，下方暖灰地面
+function getDayEnvironment() {
+  if (dayEnvTexture) return dayEnvTexture;
+  const width = 512;
+  const height = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+
+  const sky = context.createLinearGradient(0, 0, 0, height);
+  sky.addColorStop(0, "#6ba6d2");
+  sky.addColorStop(0.42, "#a8c8e0");
+  sky.addColorStop(0.5, "#dbe7ee");
+  sky.addColorStop(0.56, "#8f8b7a");
+  sky.addColorStop(1, "#4f4a3d");
+  context.fillStyle = sky;
+  context.fillRect(0, 0, width, height);
+
+  dayEnvTexture = new THREE.CanvasTexture(canvas);
+  dayEnvTexture.mapping = THREE.EquirectangularReflectionMapping;
+  dayEnvTexture.encoding = THREE.sRGBEncoding;
+  return dayEnvTexture;
+}
+
+var cloudPuffTexture = null;
+
+// 云团用的柔边圆点，几片叠在一起就是一朵云
+function getCloudPuffTexture() {
+  if (cloudPuffTexture) return cloudPuffTexture;
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, "rgba(255,255,255,0.95)");
+  gradient.addColorStop(0.45, "rgba(255,255,255,0.6)");
+  gradient.addColorStop(0.72, "rgba(255,255,255,0.22)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, size, size);
+  cloudPuffTexture = new THREE.CanvasTexture(canvas);
+  cloudPuffTexture.encoding = THREE.sRGBEncoding;
+  return cloudPuffTexture;
+}
+
+// 一片可开关的云层：按天气决定露出多少朵
+function addCloudLayer(scene, count) {
+  const group = new THREE.Group();
+  for (let index = 0; index < count; index += 1) {
+    const cloud = new THREE.Group();
+    const angle = Math.PI + (Math.random() - 0.5) * 2.9;
+    const radius = 100 + Math.random() * 55;
+    cloud.position.set(
+      Math.cos(angle) * radius,
+      16 + Math.random() * 12,
+      Math.sin(angle) * radius
+    );
+    const puffs = 4 + Math.floor(Math.random() * 3);
+    for (let index2 = 0; index2 < puffs; index2 += 1) {
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: getCloudPuffTexture(),
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.72,
+          depthWrite: false,
+          fog: false
+        })
+      );
+      const scale = 22 + Math.random() * 22;
+      sprite.scale.set(scale, scale * 0.52, 1);
+      sprite.position.set(
+        (Math.random() - 0.5) * 22,
+        (Math.random() - 0.5) * 4,
+        (Math.random() - 0.5) * 14
+      );
+      cloud.add(sprite);
+    }
+    group.add(cloud);
+  }
+  group.visible = false;
+  scene.add(group);
+  return group;
+}
+
+// 太阳：一团亮球 + 暖色光晕
+function addSun(scene, x, y, z, radius) {
+  const group = new THREE.Group();
+
+  const disc = new THREE.Mesh(
+    new THREE.SphereGeometry(radius, 32, 24),
+    new THREE.MeshBasicMaterial({ color: 0xffc851, fog: false })
+  );
+  group.add(disc);
+
+  const halo = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: getHaloTexture(),
+      color: 0xffbf5e,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      opacity: 0.9,
+      fog: false
+    })
+  );
+  halo.scale.set(radius * 9.5, radius * 8.5, 1);
+  group.add(halo);
+
+  group.position.set(x, y, z);
+  group.visible = false;
+  scene.add(group);
+  return group;
+}
+
+// ---------- 三维雨 ----------
+
+var rainStreakSeed = null;
+
+// 一批会下落、循环利用的雨丝；drawRange 控制当前显示多少条
+function addRain(scene, maxCount, spread) {
+  const area = spread || 150;
+  const positions = new Float32Array(maxCount * 6);
+  const streaks = [];
+
+  for (let index = 0; index < maxCount; index += 1) {
+    const length = 0.9 + Math.random() * 0.9;
+    const speed = 26 + Math.random() * 18;
+    const x = (Math.random() - 0.5) * area;
+    const z = (Math.random() - 0.5) * area * 0.86;
+    const y = Math.random() * 36;
+    const offset = index * 6;
+    positions[offset] = x;
+    positions[offset + 1] = y;
+    positions[offset + 2] = z;
+    positions[offset + 3] = x + length * 0.14;
+    positions[offset + 4] = y - length;
+    positions[offset + 5] = z;
+    streaks.push({ length, speed, area });
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  geometry.setDrawRange(0, 0);
+
+  const material = new THREE.LineBasicMaterial({
+    color: 0xdceaf6,
+    transparent: true,
+    opacity: 0.6,
+    depthWrite: false
+  });
+
+  const lines = new THREE.LineSegments(geometry, material);
+  lines.frustumCulled = false;
+  lines.visible = false;
+  scene.add(lines);
+
+  return { lines, geometry, positions, streaks, maxCount, area };
+}
+
+function updateRain(world, delta) {
+  const rain = world && world.rain;
+  if (!rain || !rain.lines.visible) return;
+
+  const visible = rain.geometry.drawRange.count / 2;
+  const positions = rain.positions;
+  const step = Math.min(delta, 0.05);
+
+  for (let index = 0; index < visible; index += 1) {
+    const streak = rain.streaks[index];
+    const offset = index * 6;
+    const fall = streak.speed * step;
+
+    positions[offset] += fall * 0.1;
+    positions[offset + 1] -= fall;
+    positions[offset + 3] += fall * 0.1;
+    positions[offset + 4] -= fall;
+
+    if (positions[offset + 4] < -0.4) {
+      const x = (Math.random() - 0.5) * streak.area;
+      const z = (Math.random() - 0.5) * streak.area * 0.86;
+      const y = 30 + Math.random() * 8;
+      positions[offset] = x;
+      positions[offset + 1] = y;
+      positions[offset + 2] = z;
+      positions[offset + 3] = x + streak.length * 0.14;
+      positions[offset + 4] = y - streak.length;
+      positions[offset + 5] = z;
+    } else if (positions[offset] > streak.area * 0.5) {
+      positions[offset] = (Math.random() - 0.5) * streak.area;
+      positions[offset + 3] = positions[offset] + streak.length * 0.14;
+    }
+  }
+
+  rain.geometry.attributes.position.needsUpdate = true;
+}
+
+// 雨量：细雨 500 条、中雨 900、大雨 1300、雷雨 1500
+function rainCountForWeather(code) {
+  if ([51, 53, 56].includes(code)) return 760;
+  if ([55, 57].includes(code)) return 1300;
+  if ([61, 66, 80].includes(code)) return 1500;
+  if ([63, 81].includes(code)) return 2000;
+  if ([65, 67, 82].includes(code)) return 2400;
+  if ([95, 96, 99].includes(code)) return 2800;
+  return 1500;
+}
+
+var skyDomeTexture = null;
+
+function getSkyDomeTexture() {
+  if (skyDomeTexture) return skyDomeTexture;
+  const width = 2048;
+  const height = 1024;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+
+  // 天顶深靛 → 接近地平线泛一点暖紫，下半球留黑（会被地面挡住）
+  const sky = context.createLinearGradient(0, 0, 0, height);
+  sky.addColorStop(0, "#04060e");
+  sky.addColorStop(0.28, "#081020");
+  sky.addColorStop(0.46, "#16263f");
+  sky.addColorStop(0.5, "#243049");
+  sky.addColorStop(0.54, "#26304a");
+  sky.addColorStop(0.7, "#141a2a");
+  sky.addColorStop(1, "#070709");
+  context.fillStyle = sky;
+  context.fillRect(0, 0, width, height);
+
+  // 银河：一条斜向的淡光带，用低透明度叠出来
+  context.save();
+  context.translate(width * 0.5, height * 0.3);
+  context.rotate(-0.34);
+  const band = context.createLinearGradient(0, -160, 0, 160);
+  band.addColorStop(0, "rgba(150, 176, 214, 0)");
+  band.addColorStop(0.42, "rgba(150, 176, 214, 0.1)");
+  band.addColorStop(0.5, "rgba(196, 210, 236, 0.16)");
+  band.addColorStop(0.58, "rgba(150, 176, 214, 0.1)");
+  band.addColorStop(1, "rgba(150, 176, 214, 0)");
+  context.fillStyle = band;
+  context.fillRect(-width, -160, width * 2, 320);
+  context.restore();
+
+  // 星点：大小与亮度随机，少量带暖色
+  const starCount = 1700;
+  for (let index = 0; index < starCount; index += 1) {
+    const x = Math.random() * width;
+    const y = Math.random() * height * 0.62;
+    const radius = 0.32 + Math.random() * 0.75;
+    const bright = 0.25 + Math.random() * 0.75;
+    const warm = Math.random() > 0.82;
+    context.fillStyle = warm
+      ? `rgba(255, 226, 186, ${bright})`
+      : `rgba(226, 236, 255, ${bright})`;
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  // 几颗特别亮的星，带十字光
+  for (let index = 0; index < 4; index += 1) {
+    const x = Math.random() * width;
+    const y = Math.random() * height * 0.52;
+    const glow = context.createRadialGradient(x, y, 0, x, y, 3.2);
+    glow.addColorStop(0, "rgba(255, 252, 240, 0.95)");
+    glow.addColorStop(0.35, "rgba(210, 226, 255, 0.34)");
+    glow.addColorStop(1, "rgba(180, 200, 240, 0)");
+    context.fillStyle = glow;
+    context.beginPath();
+    context.arc(x, y, 3.2, 0, Math.PI * 2);
+    context.fill();
+    context.strokeStyle = "rgba(255, 250, 236, 0.3)";
+    context.lineWidth = 0.8;
+    context.beginPath();
+    context.moveTo(x - 2.4, y);
+    context.lineTo(x + 2.4, y);
+    context.moveTo(x, y - 2.4);
+    context.lineTo(x, y + 2.4);
+    context.stroke();
+  }
+
+  skyDomeTexture = new THREE.CanvasTexture(canvas);
+  skyDomeTexture.encoding = THREE.sRGBEncoding;
+  skyDomeTexture.anisotropy = 8;
+  return skyDomeTexture;
+}
+
+function addSkyDome(scene) {
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(265, 64, 40),
+    new THREE.MeshBasicMaterial({
+      map: getSkyDomeTexture(),
+      side: THREE.BackSide,
+      fog: false,
+      depthWrite: false
+    })
+  );
+  dome.renderOrder = -10;
+  scene.add(dome);
+  return dome;
+}
+
 function addSky(scene, count = 260) {
   const positions = [];
   for (let index = 0; index < count; index += 1) {
@@ -1836,10 +3034,10 @@ function addSky(scene, count = 260) {
   const points = new THREE.Points(
     geometry,
     new THREE.PointsMaterial({
-      color: 0xc9bfa3,
+      color: 0xdcd6be,
       size: 0.11,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.72,
       depthWrite: false
     })
   );
@@ -1901,21 +3099,22 @@ function makeGroundTexture() {
   canvas.height = size;
   const context = canvas.getContext("2d");
 
-  context.fillStyle = "#16261e";
+  context.fillStyle = "#141f18";
   context.fillRect(0, 0, size, size);
 
-  for (let index = 0; index < 620; index += 1) {
+  // 只留很淡的低频起伏，避免大块色斑在平铺后像霉斑
+  for (let index = 0; index < 90; index += 1) {
     const bx = Math.random() * size;
     const by = Math.random() * size;
-    const br = 14 + Math.random() * 62;
-    const light = Math.random() > 0.46;
+    const br = 40 + Math.random() * 110;
+    const light = Math.random() > 0.42;
     for (let ox = -1; ox <= 1; ox += 1) {
       for (let oy = -1; oy <= 1; oy += 1) {
         const cx = bx + ox * size;
         const cy = by + oy * size;
         if (cx < -br || cx > size + br || cy < -br || cy > size + br) continue;
         const gradient = context.createRadialGradient(cx, cy, 0, cx, cy, br);
-        gradient.addColorStop(0, light ? "rgba(52,80,60,0.42)" : "rgba(2,6,5,0.5)");
+        gradient.addColorStop(0, light ? "rgba(52,72,46,0.12)" : "rgba(2,6,4,0.14)");
         gradient.addColorStop(1, "rgba(0,0,0,0)");
         context.fillStyle = gradient;
         context.beginPath();
@@ -1925,10 +3124,24 @@ function makeGroundTexture() {
     }
   }
 
+  // 细草纹：短笔触，比色斑更耐看
+  for (let index = 0; index < 5200; index += 1) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const len = 1.2 + Math.random() * 2.6;
+    const tone = Math.random() > 0.5 ? "rgba(70,92,56,0.3)" : "rgba(6,12,7,0.32)";
+    context.strokeStyle = tone;
+    context.lineWidth = 0.8;
+    context.beginPath();
+    context.moveTo(x, y);
+    context.lineTo(x + (Math.random() - 0.5) * 1.6, y - len);
+    context.stroke();
+  }
+
   const image = context.getImageData(0, 0, size, size);
   const data = image.data;
   for (let index = 0; index < data.length; index += 4) {
-    const grain = (Math.random() - 0.5) * 22;
+    const grain = (Math.random() - 0.5) * 10;
     data[index] = Math.max(0, Math.min(255, data[index] + grain));
     data[index + 1] = Math.max(0, Math.min(255, data[index + 1] + grain));
     data[index + 2] = Math.max(0, Math.min(255, data[index + 2] + grain));
@@ -1938,29 +3151,58 @@ function makeGroundTexture() {
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(5, 5);
+  texture.repeat.set(9, 9);
   texture.anisotropy = 4;
   return texture;
 }
 
-function addGround(scene) {
-  const geometry = new THREE.RingGeometry(0.001, GROUND_RADIUS, 132, 76);
+var groundTextureBase = null;
+
+// 内圈与旷野共用一张草地贴图，但按各自覆盖的直径换算平铺次数，接缝处纹理密度才一致
+function groundTextureFor(outerRadius) {
+  if (!groundTextureBase) groundTextureBase = makeGroundTexture();
+  const texture = groundTextureBase.clone();
+  texture.needsUpdate = true;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set((outerRadius * 2) / 8, (outerRadius * 2) / 8);
+  return texture;
+}
+
+function buildGroundMesh(innerRadius, outerRadius, radialSegments, heightBias) {
+  const geometry = new THREE.RingGeometry(innerRadius, outerRadius, 168, radialSegments);
   geometry.rotateX(-Math.PI / 2);
   const position = geometry.attributes.position;
   for (let index = 0; index < position.count; index += 1) {
-    position.setY(index, groundHeightAt(position.getX(index), position.getZ(index)));
+    position.setY(index, groundHeightAt(position.getX(index), position.getZ(index)) + heightBias);
   }
   geometry.computeVertexNormals();
-
-  const ground = new THREE.Mesh(
+  return new THREE.Mesh(
     geometry,
-    new THREE.MeshStandardMaterial({ map: makeGroundTexture(), metalness: 0.02, roughness: 0.95 })
+    new THREE.MeshStandardMaterial({
+      map: groundTextureFor(outerRadius),
+      color: 0xffe0b8,
+      metalness: 0.02,
+      roughness: 0.95
+    })
   );
+}
+
+function addGround(scene) {
+  const ground = buildGroundMesh(0.001, GROUND_RADIUS, 76, 0);
   ground.receiveShadow = true;
   scene.add(ground);
 
+  // 旷野：接在圆盘外沿，一直延伸到雾里，让地面不再有可见的圆边
+  const field = buildGroundMesh(GROUND_RADIUS - 1.6, GROUND_FAR_RADIUS, 96, -0.02);
+  field.receiveShadow = true;
+  scene.add(field);
+
+  scene.userData.groundMaterials = [ground.material, field.material];
+
   addPlaza(scene);
   addLake(scene);
+  addDistantTrees(scene);
 }
 
 var stoneTexture = null;
@@ -2016,6 +3258,7 @@ function getStoneTexture() {
 function addPlaza(scene) {
   const stone = new THREE.MeshStandardMaterial({
     map: getStoneTexture(),
+    color: 0xffd0a0,
     metalness: 0.14,
     roughness: 0.86
   });
@@ -2205,7 +3448,7 @@ function addBoundaryHedge(scene) {
 }
 
 function addPaths(scene) {
-  const mainMaterial = standardMaterial(0x565044, 0.08, 0.9);
+  const mainMaterial = standardMaterial(0x6a5a42, 0.08, 0.9);
   const shoulderMaterial = standardMaterial(0x1e261f, 0.06, 0.94);
   const center = new THREE.Vector3(0, 0, 2);
   const entrance = new THREE.Vector3(0, 0, 20.6);
@@ -2222,6 +3465,8 @@ function addPaths(scene) {
 
   facilities.forEach((facility) => {
     const point = new THREE.Vector3(facility.world[0], 0, facility.world[2]);
+    // 中心那台（旋转木马）就站在路口上，不需要再画一条放射小路
+    if (point.lengthSq() < 0.01) return;
     const direction = point.clone().sub(center).normalize();
     const from = center.clone().add(direction.multiplyScalar(5.85));
     const bend = center.clone().lerp(point, 0.55);
@@ -2454,6 +3699,249 @@ function buildEntranceGate() {
   return { group, setSign };
 }
 
+
+function addDistantTrees(scene) {
+  // 成丛分布：每丛 2–5 棵，比均匀撒点更像自然林带
+  const clusters = 34;
+  for (let cluster = 0; cluster < clusters; cluster += 1) {
+    const angle = (cluster / clusters) * Math.PI * 2 + groundHash(cluster, 53) * 1.4;
+    const radius = 42 + groundHash(cluster, 59) * 106;
+    const anchorX = Math.cos(angle) * radius;
+    const anchorZ = Math.sin(angle) * radius;
+    const groupSize = 2 + Math.floor(groundHash(cluster, 67) * 4);
+    for (let index = 0; index < groupSize; index += 1) {
+      const x = anchorX + (groundHash(cluster * 13 + index, 71) - 0.5) * 6.4;
+      const z = anchorZ + (groundHash(cluster * 17 + index, 73) - 0.5) * 6.4;
+      const scale = 0.7 + groundHash(cluster * 19 + index, 61) * 0.95;
+      const tree = addTree(scene, x, z, scale);
+      tree.traverse((child) => {
+        if (child.isMesh) {
+          child.castShadow = false;
+          child.receiveShadow = false;
+        }
+      });
+    }
+  }
+}
+
+// ---------- 旷野陈设：草簇、石头、灌木、外延小路 ----------
+
+var roadSamples = null;
+
+// 从入口前庭向外延伸的路，采样点缓存下来，供避让判断使用
+function getRoadSamples() {
+  if (roadSamples) return roadSamples;
+  const points = [];
+  for (let index = 0; index <= 48; index += 1) {
+    const t = index / 48;
+    const z = 21.4 + t * 118;
+    const x = -3.5 * t + Math.sin(t * 2.1) * 8 * t;
+    points.push({ x, z });
+  }
+  roadSamples = points;
+  return points;
+}
+
+function distanceToRoad(x, z) {
+  const points = getRoadSamples();
+  let best = Infinity;
+  for (let index = 0; index < points.length; index += 1) {
+    const dx = x - points[index].x;
+    const dz = z - points[index].z;
+    const distance = dx * dx + dz * dz;
+    if (distance < best) best = distance;
+  }
+  return Math.sqrt(best);
+}
+
+function dressingBlocked(x, z) {
+  const radius = Math.hypot(x, z);
+  if (radius < 9.4) return true;
+  if (Math.hypot(x, z - 20.6) < 6.4) return true;
+  if (Math.hypot(x - LAKE.x, z - LAKE.z) < LAKE.rx + 2.4) return true;
+  for (const facility of facilities) {
+    if (Math.hypot(x - facility.world[0], z - facility.world[2]) < 6.4) return true;
+  }
+  if (radius < 40 && distanceToRoad(x, z) < 2.6) return true;
+  return false;
+}
+
+function addOuterRoad(scene) {
+  const mainMaterial = standardMaterial(0x584a37, 0.08, 0.92);
+  const shoulderMaterial = standardMaterial(0x191f19, 0.06, 0.95);
+  const points = getRoadSamples().map((point) => {
+    return new THREE.Vector3(point.x, groundHeightAt(point.x, point.z) + 0.03, point.z);
+  });
+
+  addRibbon(scene, points, 2.1, shoulderMaterial, undefined);
+  addRibbon(scene, points, 1.5, mainMaterial, undefined);
+
+  // 沿路的路灯，越远越稀，把视线带进雾里
+  [
+    [-3.4, 30],
+    [3.8, 47],
+    [-4.6, 68],
+    [5.2, 92],
+    [-5.4, 118]
+  ].forEach(([x, z]) => addLamp(scene, x, z));
+}
+
+function addGroundDressing(scene) {
+  const dummy = new THREE.Object3D();
+  const color = new THREE.Color();
+
+  // 草丛：三棱锥小簇，铺满园子外围
+  const grassGeometry = new THREE.ConeGeometry(0.085, 0.44, 3, 1, true);
+  grassGeometry.translate(0, 0.22, 0);
+  const grassMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    metalness: 0,
+    roughness: 0.94,
+    flatShading: true
+  });
+  const grassCount = 2400;
+  const grass = new THREE.InstancedMesh(grassGeometry, grassMaterial, grassCount);
+  let placed = 0;
+  let guard = 0;
+  while (placed < grassCount && guard < grassCount * 10) {
+    guard += 1;
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 9.6 + Math.pow(Math.random(), 0.72) * 88;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    if (dressingBlocked(x, z)) continue;
+    const scale = 0.7 + Math.random() * 1.05;
+    dummy.position.set(x, groundHeightAt(x, z), z);
+    dummy.rotation.set(0, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.2);
+    dummy.scale.set(scale * (0.7 + Math.random() * 0.7), scale, scale * (0.7 + Math.random() * 0.7));
+    dummy.updateMatrix();
+    grass.setMatrixAt(placed, dummy.matrix);
+    color.setHSL(0.29 + Math.random() * 0.05, 0.3 + Math.random() * 0.14, 0.08 + Math.random() * 0.06);
+    grass.setColorAt(placed, color);
+    placed += 1;
+  }
+  grass.count = placed;
+  grass.instanceMatrix.needsUpdate = true;
+  if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
+  scene.add(grass);
+
+  // 石头：散落的碎石与几块大一点的景石
+  const rockGeometry = new THREE.DodecahedronGeometry(0.42, 0);
+  const rockMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    metalness: 0.04,
+    roughness: 0.88,
+    flatShading: true
+  });
+  const rockCount = 120;
+  const rocks = new THREE.InstancedMesh(rockGeometry, rockMaterial, rockCount);
+  rocks.castShadow = true;
+  rocks.receiveShadow = true;
+  for (let index = 0; index < rockCount; index += 1) {
+    let x = 0;
+    let z = 0;
+    let tries = 0;
+    do {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 10 + Math.pow(Math.random(), 0.8) * 104;
+      x = Math.cos(angle) * radius;
+      z = Math.sin(angle) * radius;
+      tries += 1;
+    } while (dressingBlocked(x, z) && tries < 30);
+
+    const scale = 0.4 + Math.pow(Math.random(), 2.2) * 2.1;
+    dummy.position.set(x, groundHeightAt(x, z) + scale * 0.18, z);
+    dummy.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+    dummy.scale.set(scale * (0.9 + Math.random() * 0.5), scale * (0.6 + Math.random() * 0.4), scale);
+    dummy.updateMatrix();
+    rocks.setMatrixAt(index, dummy.matrix);
+    color.setHSL(0.08, 0.04 + Math.random() * 0.05, 0.1 + Math.random() * 0.07);
+    rocks.setColorAt(index, color);
+  }
+  rocks.instanceMatrix.needsUpdate = true;
+  if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
+  scene.add(rocks);
+
+  // 灌木：比树矮一截，把空草地切碎
+  const bushGeometry = new THREE.IcosahedronGeometry(0.62, 1);
+  const bushMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    metalness: 0.02,
+    roughness: 0.9,
+    flatShading: true
+  });
+  const bushCount = 150;
+  const bushes = new THREE.InstancedMesh(bushGeometry, bushMaterial, bushCount);
+  bushes.castShadow = true;
+  bushes.receiveShadow = true;
+  let bushPlaced = 0;
+  let bushGuard = 0;
+  while (bushPlaced < bushCount && bushGuard < bushCount * 10) {
+    bushGuard += 1;
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 11 + Math.pow(Math.random(), 0.75) * 96;
+    const x = Math.cos(angle) * radius;
+    const z = Math.sin(angle) * radius;
+    if (dressingBlocked(x, z)) continue;
+    const scale = 0.7 + Math.random() * 1.15;
+    dummy.position.set(x, groundHeightAt(x, z) + scale * 0.32, z);
+    dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+    dummy.scale.set(scale * 1.3, scale * 0.85, scale * 1.15);
+    dummy.updateMatrix();
+    bushes.setMatrixAt(bushPlaced, dummy.matrix);
+    color.setHSL(0.32 + Math.random() * 0.05, 0.28 + Math.random() * 0.14, 0.07 + Math.random() * 0.05);
+    bushes.setColorAt(bushPlaced, color);
+    bushPlaced += 1;
+  }
+  bushes.count = bushPlaced;
+  bushes.instanceMatrix.needsUpdate = true;
+  if (bushes.instanceColor) bushes.instanceColor.needsUpdate = true;
+  scene.add(bushes);
+
+  // 花丛：成簇分布，带微弱自发光，夜里才看得见
+  const flowerGeometry = new THREE.IcosahedronGeometry(0.075, 0);
+  const flowerMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    metalness: 0,
+    roughness: 0.7,
+    emissive: 0xffffff,
+    emissiveIntensity: 0.12,
+    flatShading: true
+  });
+  const flowerCount = 260;
+  const flowers = new THREE.InstancedMesh(flowerGeometry, flowerMaterial, flowerCount);
+  let flowerPlaced = 0;
+  let flowerGuard = 0;
+  const flowerPalette = [0xd8b478, 0xc98a94, 0xa89ac4, 0xd9c6a0];
+  while (flowerPlaced < flowerCount && flowerGuard < flowerCount * 12) {
+    flowerGuard += 1;
+    const clusterAngle = Math.random() * Math.PI * 2;
+    const clusterRadius = 11 + Math.pow(Math.random(), 0.9) * 48;
+    const centreX = Math.cos(clusterAngle) * clusterRadius;
+    const centreZ = Math.sin(clusterAngle) * clusterRadius;
+    const spread = 0.45 + Math.random() * 0.75;
+    const perCluster = 5 + Math.floor(Math.random() * 6);
+    for (let index = 0; index < perCluster && flowerPlaced < flowerCount; index += 1) {
+      const x = centreX + (Math.random() - 0.5) * spread * 2;
+      const z = centreZ + (Math.random() - 0.5) * spread * 2;
+      if (dressingBlocked(x, z)) continue;
+      const scale = 0.55 + Math.random() * 0.6;
+      dummy.position.set(x, groundHeightAt(x, z) + 0.1 * scale, z);
+      dummy.rotation.set(Math.random(), Math.random(), Math.random());
+      dummy.scale.setScalar(scale);
+      dummy.updateMatrix();
+      flowers.setMatrixAt(flowerPlaced, dummy.matrix);
+      color.setHex(flowerPalette[Math.floor(Math.random() * flowerPalette.length)]);
+      flowers.setColorAt(flowerPlaced, color);
+      flowerPlaced += 1;
+    }
+  }
+  flowers.count = flowerPlaced;
+  flowers.instanceMatrix.needsUpdate = true;
+  if (flowers.instanceColor) flowers.instanceColor.needsUpdate = true;
+  scene.add(flowers);
+}
+
 function addScenery(scene) {
   const treePositions = [
     [-25, -16], [-20, -22], [-8, -24], [8, -24], [18, -20], [25, -13],
@@ -2480,10 +3968,10 @@ function addScenery(scene) {
   const fireflies = new THREE.Points(
     fireflyGeometry,
     new THREE.PointsMaterial({
-      color: 0xc4ab71,
-      size: 0.09,
+      color: 0xffc98a,
+      size: 0.065,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.5,
       depthWrite: false
     })
   );
@@ -2514,6 +4002,7 @@ function addTree(scene, x, z, scale) {
   group.position.set(x, groundHeightAt(x, z), z);
   group.scale.setScalar(scale);
   scene.add(group);
+  return group;
 }
 
 var lampGlowTexture = null;
@@ -2526,14 +4015,86 @@ function getLampGlowTexture() {
   canvas.height = size;
   const context = canvas.getContext("2d");
   const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  gradient.addColorStop(0, "rgba(255,228,180,1)");
-  gradient.addColorStop(0.34, "rgba(244,204,148,0.5)");
-  gradient.addColorStop(0.66, "rgba(208,172,118,0.17)");
+  gradient.addColorStop(0, "rgba(255,176,92,0.95)");
+  gradient.addColorStop(0.32, "rgba(255,150,60,0.34)");
+  gradient.addColorStop(0.6, "rgba(206,132,64,0.12)");
   gradient.addColorStop(1, "rgba(0,0,0,0)");
   context.fillStyle = gradient;
   context.fillRect(0, 0, size, size);
   lampGlowTexture = new THREE.CanvasTexture(canvas);
   return lampGlowTexture;
+}
+
+var haloTexture = null;
+
+function getHaloTexture() {
+  if (haloTexture) return haloTexture;
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const context = canvas.getContext("2d");
+  const gradient = context.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  gradient.addColorStop(0, "rgba(255,255,255,0.9)");
+  gradient.addColorStop(0.28, "rgba(255,255,255,0.34)");
+  gradient.addColorStop(0.62, "rgba(255,255,255,0.09)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, size, size);
+  haloTexture = new THREE.CanvasTexture(canvas);
+  return haloTexture;
+}
+
+function addGlowHalo(scene, x, y, z, color, scale, opacity) {
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: getHaloTexture(),
+      color,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      opacity
+    })
+  );
+  sprite.position.set(x, y, z);
+  sprite.scale.set(scale, scale, 1);
+  scene.add(sprite);
+  return sprite;
+}
+
+function addLightRing(scene, x, z, radius, count, colorA, colorB, y) {
+  const positions = [];
+  const colors = [];
+  const warm = new THREE.Color(colorA);
+  const accent = new THREE.Color(colorB);
+  for (let index = 0; index < count; index += 1) {
+    const angle = (index / count) * Math.PI * 2;
+    positions.push(
+      x + Math.cos(angle) * radius,
+      y + Math.sin(index * 1.7) * 0.05,
+      z + Math.sin(angle) * radius
+    );
+    const color = index % 2 === 0 ? warm : accent;
+    colors.push(color.r, color.g, color.b);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  const points = new THREE.Points(
+    geometry,
+    new THREE.PointsMaterial({
+      size: 0.62,
+      map: getHaloTexture(),
+      vertexColors: true,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      opacity: 0.92,
+      sizeAttenuation: true
+    })
+  );
+  scene.add(points);
+  return points;
 }
 
 function addLamp(scene, x, z) {
@@ -2547,27 +4108,34 @@ function addLamp(scene, x, z) {
 
   const light = new THREE.Mesh(
     new THREE.SphereGeometry(0.14, 12, 8),
-    new THREE.MeshBasicMaterial({ color: 0xe1bd78 })
+    new THREE.MeshBasicMaterial({ color: 0xffd79a })
   );
   light.position.y = 2.45;
   group.add(light);
   group.position.set(x, groundHeightAt(x, z), z);
   scene.add(group);
 
+  const lampLight = new THREE.PointLight(0xffb877, 1.7, 7.5, 2);
+  lampLight.position.set(x, groundHeightAt(x, z) + 2.35, z);
+  scene.add(lampLight);
+
   // 灯下的地面光斑：让地皮看起来被灯照过
   const pool = new THREE.Mesh(
-    new THREE.PlaneGeometry(7.2, 7.2),
+    new THREE.PlaneGeometry(5.2, 5.2),
     new THREE.MeshBasicMaterial({
       map: getLampGlowTexture(),
       transparent: true,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
-      opacity: 1
+      opacity: 0.55
     })
   );
   pool.rotation.x = -Math.PI / 2;
   pool.position.set(x, groundHeightAt(x, z) + 0.015, z);
   scene.add(pool);
+
+  // 灯泡本体的光晕，让它在远处也像一颗亮点
+  addGlowHalo(scene, x, groundHeightAt(x, z) + 2.45, z, 0xffcf94, 1.6, 0.38);
 }
 
 function standardMaterial(color, metalness = 0.4, roughness = 0.6, emissive = 0x000000) {
@@ -2868,6 +4436,8 @@ function buildCoaster() {
   for (let index = 0; index < 16; index += 1) {
     const point = curve.getPointAt(index / 16);
     if (point.y < 0.75) continue;
+    // 站台范围内不立杆，避免柱子从站台板里穿出来
+    if (point.x > -6.9 && point.x < -2.6 && point.z > -0.6 && point.z < 1.6) continue;
     rodBetween(group, new THREE.Vector3(point.x, 0, point.z), point, 0.045, steel);
   }
 
@@ -2939,10 +4509,12 @@ function buildCoasterRefined() {
   const stationMaterial = standardMaterial(0x1e302d, 0.55, 0.56);
 
   const controlPoints = [
-    new THREE.Vector3(-5.8, 1.15, -1.35),
-    new THREE.Vector3(-5.45, 1.32, 0.8),
-    new THREE.Vector3(-4.6, 2.15, 1.75),
-    new THREE.Vector3(-3.5, 4.15, 1.35),
+    new THREE.Vector3(-5.05, 1.12, -2.35),
+    new THREE.Vector3(-5.0, 1.16, -0.1),
+    new THREE.Vector3(-4.85, 1.18, 1.25),
+    new THREE.Vector3(-4.85, 1.22, 3.0),
+    new THREE.Vector3(-4.1, 2.95, 3.95),
+    new THREE.Vector3(-3.25, 4.85, 2.6),
     new THREE.Vector3(-2.45, 6.3, 0.72),
     new THREE.Vector3(-1.3, 6.55, -0.42),
     new THREE.Vector3(-0.55, 4.95, -1.75),
@@ -2956,9 +4528,9 @@ function buildCoasterRefined() {
     new THREE.Vector3(2.25, 0.78, -1.25),
     new THREE.Vector3(1.15, 2.25, -0.25),
     new THREE.Vector3(-0.05, 2.9, 0.9),
-    new THREE.Vector3(-1.8, 1.2, 1.55),
-    new THREE.Vector3(-3.35, 0.82, 1.65),
-    new THREE.Vector3(-4.5, 0.92, 0.6)
+    new THREE.Vector3(-2.0, 1.4, -1.9),
+    new THREE.Vector3(-4.1, 0.95, -3.0),
+    new THREE.Vector3(-5.1, 1.0, -3.25)
   ];
   const curve = new THREE.CatmullRomCurve3(controlPoints, true, "catmullrom", 0.2);
 
@@ -3010,9 +4582,15 @@ function buildCoasterRefined() {
   }
 
   const supportPoints = [];
+  const stationLeft = -6.9;
+  const stationRight = -3.4;
+  const stationNear = -2.1;
+  const stationFar = 2.0;
   for (let index = 0; index < 28; index += 1) {
     const point = curve.getPointAt(index / 28);
     if (point.y < 1.05) continue;
+    // 站台体内不立杆：否则柱子会从月台中间穿出来
+    if (point.x > stationLeft && point.x < stationRight && point.z > stationNear && point.z < stationFar) continue;
     supportPoints.push(point);
     rodBetween(group, new THREE.Vector3(point.x, 0, point.z), new THREE.Vector3(point.x, point.y, point.z), 0.045, supportMaterial);
     if (point.y > 3.8) {
@@ -3033,21 +4611,133 @@ function buildCoasterRefined() {
     }
   }
 
+  // 站台：轨道沿 z 轴单线直穿，两侧月台，中间留出净空
   const station = new THREE.Group();
-  station.position.set(-5.2, 0, -0.2);
-  const deck = new THREE.Mesh(new THREE.BoxGeometry(3.7, 0.24, 2.1), stationMaterial);
-  deck.position.y = 0.95;
-  deck.castShadow = true;
-  station.add(deck);
-  for (const x of [-1.45, 1.45]) {
-    for (const z of [-0.75, 0.75]) {
-      rodBetween(station, new THREE.Vector3(x, 0, z), new THREE.Vector3(x, 3.15, z), 0.045, supportMaterial);
+  station.position.set(-5.1, 0, -0.2);
+
+  const deckMaterial = standardMaterial(0x243735, 0.5, 0.6);
+  const trimMaterial = standardMaterial(0x9a8259, 0.72, 0.36);
+  const railMaterialStation = standardMaterial(0x3d4d47, 0.7, 0.4);
+
+  const platformZ = 2.9;
+  const platforms = [
+    { x: -0.99, width: 0.95, inner: 0.48 },
+    { x: 0.91, width: 0.9, inner: -0.42 }
+  ];
+
+  platforms.forEach((platform) => {
+    // 台身：从地面砌到甲板底，月台不再是悬空的一块板
+    const plinth = new THREE.Mesh(new THREE.BoxGeometry(platform.width - 0.06, 0.82, platformZ - 0.06), deckMaterial);
+    plinth.position.set(platform.x, 0.41, 0);
+    plinth.castShadow = true;
+    plinth.receiveShadow = true;
+    station.add(plinth);
+
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(platform.width, 0.2, platformZ), deckMaterial);
+    deck.position.set(platform.x, 0.92, 0);
+    deck.castShadow = true;
+    deck.receiveShadow = true;
+    station.add(deck);
+
+    // 月台边缘的亮色压条，把轮廓提出来
+    const edge = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.045, platformZ - 0.1), trimMaterial);
+    edge.position.set(platform.x + platform.inner, 1.04, 0);
+    edge.castShadow = true;
+    station.add(edge);
+
+    // 靠轨道一侧的栏杆：立柱 + 扶手
+    const railTop = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.045, platformZ - 0.12), railMaterialStation);
+    railTop.position.set(platform.x + platform.inner, 1.62, 0);
+    station.add(railTop);
+    for (let index = 0; index < 6; index += 1) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.68, 0.04), railMaterialStation);
+      post.position.set(platform.x + platform.inner, 1.28, -platformZ / 2 + 0.18 + index * ((platformZ - 0.36) / 5));
+      station.add(post);
     }
+  });
+
+  // 外侧矮墙 + 嵌进去的玻璃窗
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.5, platformZ), deckMaterial);
+  wall.position.set(-1.42, 1.78, 0);
+  wall.castShadow = true;
+  station.add(wall);
+  for (let index = 0; index < 3; index += 1) {
+    const window = new THREE.Mesh(
+      new THREE.BoxGeometry(0.05, 0.62, 0.62),
+      new THREE.MeshBasicMaterial({ color: 0x14262a })
+    );
+    window.position.set(-1.44, 2.02, -0.92 + index * 0.92);
+    station.add(window);
   }
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(3.85, 0.12, 2.35), stationMaterial);
-  roof.position.y = 3.2;
-  roof.castShadow = true;
-  station.add(roof);
+
+  // 四根落地柱，落在月台上、避开轨道净空
+  [[-1.36, -1.34], [-1.36, 1.34], [1.24, -1.34], [1.24, 1.34]].forEach(([x, z]) => {
+    rodBetween(station, new THREE.Vector3(x, 0, z), new THREE.Vector3(x, 3.02, z), 0.05, supportMaterial);
+  });
+
+  // 双坡屋面：两片斜板在脊线相接，坡向朝两侧下落
+  const roofDepth = platformZ + 0.28;
+  const roofSlope = 0.2;
+  [-1, 1].forEach((side) => {
+    const panel = new THREE.Mesh(new THREE.BoxGeometry(1.66, 0.09, roofDepth), stationMaterial);
+    panel.position.set(side * 0.81 - 0.05, 3.16, 0);
+    panel.rotation.z = side * -roofSlope;
+    panel.castShadow = true;
+    station.add(panel);
+  });
+
+  const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.11, roofDepth + 0.02), trimMaterial);
+  ridge.position.set(-0.05, 3.34, 0);
+  ridge.castShadow = true;
+  station.add(ridge);
+
+  // 檐口板：压住两片屋面的外沿
+  [-1.69, 1.59].forEach((x) => {
+    const eave = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.16, roofDepth), trimMaterial);
+    eave.position.set(x, 3.0, 0);
+    eave.castShadow = true;
+    station.add(eave);
+  });
+
+  // 端头横梁，把两片屋面在前后两端连起来
+  [-1, 1].forEach((side) => {
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(3.3, 0.08, 0.07), trimMaterial);
+    beam.position.set(-0.05, 3.02, side * (roofDepth / 2 - 0.02));
+    station.add(beam);
+  });
+
+  // 东侧台阶：实心踏步，从地面直接砌到月台面，避开南侧进站的轨道
+  const stepCount = 4;
+  for (let index = 0; index < stepCount; index += 1) {
+    const top = 0.82 - index * 0.205;
+    if (top <= 0.02) continue;
+    const step = new THREE.Mesh(new THREE.BoxGeometry(0.27, top, 0.95), deckMaterial);
+    step.position.set(1.375 + 0.135 + index * 0.27, top / 2, 0);
+    step.castShadow = true;
+    step.receiveShadow = true;
+    station.add(step);
+  }
+  // 台阶两侧的矮边石，收一下轮廓
+  [-0.5, 0.5].forEach((z) => {
+    const kerb = new THREE.Mesh(new THREE.BoxGeometry(1.08, 0.12, 0.06), trimMaterial);
+    kerb.position.set(1.92, 0.06, z);
+    kerb.castShadow = true;
+    station.add(kerb);
+  });
+
+  // 月台上两盏小灯，立在靠墙一侧
+  [-1.0, 1.0].forEach((z) => {
+    const lampPost = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.55, 0.05), railMaterialStation);
+    lampPost.position.set(-1.24, 1.28, z);
+    station.add(lampPost);
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.075, 10, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffd9a0 })
+    );
+    bulb.position.set(-1.24, 1.58, z);
+    station.add(bulb);
+  });
+
   group.add(station);
 
   const train = [0, 1, 2].map((index) => {
@@ -3243,6 +4933,7 @@ function buildCarousel() {
   const dark = standardMaterial(0x314b43, 0.55, 0.48);
   const cream = standardMaterial(0xd0c29e, 0.2, 0.67);
 
+  group.userData.lightRadius = 3.9;
   const base = new THREE.Mesh(new THREE.CylinderGeometry(3.35, 3.6, 0.28, 48), dark);
   base.position.y = 0.14;
   base.receiveShadow = true;
@@ -3416,7 +5107,7 @@ function buildCarouselDetailed() {
     rotor.add(band);
   }
 
-  for (let index = 0; index < 14; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     const angle = (index / 14) * Math.PI * 2;
     const post = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.04, 3.55, 8), brass);
     post.position.set(Math.cos(angle) * 2.88, 1.92, Math.sin(angle) * 2.88);
@@ -3437,7 +5128,7 @@ function buildCarouselDetailed() {
   trimRing.position.y = 3.69;
   rotor.add(trimRing);
 
-  for (let index = 0; index < 14; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     const angle = (index / 14) * Math.PI * 2;
     rodBetween(
       rotor,
@@ -3822,7 +5513,7 @@ function buildSlide() {
   for (const rx of [-0.16, 0.16]) {
     strut(tower, new THREE.Vector3(rx, 0.3, -0.56), new THREE.Vector3(rx, top, -0.56), 0.02, 0.02, steelDeep, 6);
   }
-  for (let index = 0; index < 14; index += 1) {
+  for (let index = 0; index < 4; index += 1) {
     const y = 0.6 + index * 0.42;
     strut(tower, new THREE.Vector3(-0.16, y, -0.56), new THREE.Vector3(0.16, y, -0.56), 0.013, 0.013, steelDeep, 5);
   }
@@ -5001,14 +6692,19 @@ function bindOrbit(canvas, world) {
 function animateWorlds() {
   requestAnimationFrame(animateWorlds);
   modelTime += 0.016;
+  const now = performance.now();
+  const delta = lastFrameTime ? Math.min((now - lastFrameTime) / 1000, 0.06) : 0.016;
+  lastFrameTime = now;
 
   if (overviewWorld) {
+    updateRain(overviewWorld, delta);
     Object.values(overviewWorld.rides).forEach((ride) => ride.update(modelTime));
     overviewWorld.renderer.render(overviewWorld.scene, overviewWorld.camera);
     positionMapMarkers();
   }
 
   if (activeModel && focusWorld) {
+    updateRain(focusWorld, delta);
     activeModel.update(modelTime);
     focusWorld.renderer.render(focusWorld.scene, focusWorld.camera);
   }
@@ -5032,4 +6728,11 @@ function positionMapMarkers() {
     marker.style.opacity = visible ? "1" : "0";
     marker.style.pointerEvents = visible ? "auto" : "none";
   });
+}
+
+// 放到最后调用：此时所有顶层常量（天空配方、地形参数等）都已初始化
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", init);
+} else {
+  init();
 }
