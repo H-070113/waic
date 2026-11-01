@@ -7,7 +7,10 @@
 
 把整个文件夹拷到别的设备，换个浏览器打开，按名字搜索依然能找得到。
 
-接口（只监听 127.0.0.1）：
+默认监听所有网卡，手机连同一个 Wi-Fi 直接用 http://<电脑IP>:8899 打开，
+看到的和电脑是同一份照片。
+
+接口：
   GET    /api/photos          取照片清单
   POST   /api/photos          上传（请求体是图片原始字节，X-Photo-Name 放名字）
   DELETE /api/photos/<id>     删除一张
@@ -16,6 +19,7 @@
 import json
 import mimetypes
 import os
+import socket
 import time
 import threading
 import uuid
@@ -28,6 +32,27 @@ INDEX_FILE = os.path.join(LIB_DIR, "index.json")
 API_PATH = "/api/photos"
 MAX_BYTES = 24 * 1024 * 1024
 PORT = int(os.environ.get("STAR_ISLE_PORT", "8899"))
+HOST = os.environ.get("STAR_ISLE_HOST", "0.0.0.0")
+
+
+def lan_addresses():
+    """本机在局域网里的地址，给手机用"""
+    found = []
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("8.8.8.8", 80))
+        found.append(probe.getsockname()[0])
+        probe.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            address = info[4][0]
+            if not address.startswith("127.") and address not in found:
+                found.append(address)
+    except OSError:
+        pass
+    return found
 
 ALLOWED_TYPES = {
     "image/jpeg": ".jpg",
@@ -94,7 +119,13 @@ class Handler(SimpleHTTPRequestHandler):
             with _lock:
                 photos = read_index()
             photos.sort(key=lambda p: p.get("createdAt", 0), reverse=True)
-            self.send_json({"ok": True, "photos": [public_entry(p) for p in photos]})
+            addresses = lan_addresses()
+            lan = "http://%s:%d/index.html" % (addresses[0], PORT) if addresses else ""
+            self.send_json({
+                "ok": True,
+                "lan": lan,
+                "photos": [public_entry(p) for p in photos],
+            })
             return
         super().do_GET()
 
@@ -182,12 +213,14 @@ def main():
     mimetypes.add_type("model/gltf-binary", ".glb")
 
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+        server = ThreadingHTTPServer((HOST, PORT), Handler)
     except OSError:
         print("[star-isle] port %d is busy - close the old server window first." % PORT)
         return
 
-    print("[star-isle] http://127.0.0.1:%d/index.html" % PORT)
+    print("[star-isle] this computer : http://127.0.0.1:%d/index.html" % PORT)
+    for address in lan_addresses():
+        print("[star-isle] phone / other: http://%s:%d/index.html" % (address, PORT))
     print("[star-isle] album library: photo-library\\")
     try:
         server.serve_forever()

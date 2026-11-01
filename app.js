@@ -254,6 +254,7 @@ let albumListUrls = [];
 let albumResultUrl = null;
 let albumApiPromise = null;
 let albumMigrated = false;
+let albumLanUrl = "";
 
 // 打开 IndexedDB。被浏览器拒绝（iframe、file://、无痕等）时返回 null，交给上层降级
 function openAlbumDb() {
@@ -335,6 +336,7 @@ async function albumApiReady() {
       });
       if (!response.ok) return false;
       const payload = await response.json();
+      if (payload && payload.lan) albumLanUrl = String(payload.lan).replace(/index\.html$/, "");
       return Boolean(payload && payload.ok);
     } catch (error) {
       return false;
@@ -485,6 +487,7 @@ async function albumAll() {
   if (backend === "server") {
     const response = await fetch(ALBUM_API, { cache: "no-store" });
     const payload = await response.json();
+    if (payload && payload.lan) albumLanUrl = String(payload.lan).replace(/index\.html$/, "");
     return Array.isArray(payload && payload.photos) ? payload.photos : [];
   }
   if (backend === "idb") {
@@ -576,7 +579,9 @@ async function updatePhotoStorageHint() {
   if (!elements.photoStorage) return;
   const backend = await ensureAlbumBackend();
   if (backend === "server") {
-    elements.photoStorage.textContent = "照片存在这个文件夹的 photo-library 里，换设备带上整个文件夹就能搜到。";
+    elements.photoStorage.textContent = albumLanUrl
+      ? "照片存在这台电脑的 photo-library 里。手机连同一个 Wi-Fi，用 " + albumLanUrl + " 打开，看到的是同一批照片。"
+      : "照片存在这台电脑的 photo-library 里，换设备带上整个文件夹就能搜到。";
     elements.photoStorage.dataset.mode = "server";
   } else if (backend === "idb") {
     elements.photoStorage.textContent = "图库服务没开，照片暂存在这台设备的浏览器数据库里。";
