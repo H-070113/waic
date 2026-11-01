@@ -246,6 +246,13 @@ const ALBUM_MAX_SIZE = 12 * 1024 * 1024;
 // 图库接口：照片落在本文件夹的 photo-library/ 里，换设备时跟着文件夹一起走
 const ALBUM_API = "api/photos";
 
+// 云端图库（Supabase）。supabase-config.js 里填了网址和 anon key 就会启用，
+// 这时任何设备打开同一个页面看到的都是同一批照片。
+const CLOUD_CONFIG = (window.STAR_ISLE_SUPABASE && window.STAR_ISLE_SUPABASE.url && window.STAR_ISLE_SUPABASE.anonKey)
+  ? window.STAR_ISLE_SUPABASE
+  : null;
+const CLOUD_BUCKET = (CLOUD_CONFIG && CLOUD_CONFIG.bucket) || "album";
+
 let albumDbPromise = null;
 let albumBackend = null;
 let albumMemory = [];
@@ -347,10 +354,195 @@ async function albumApiReady() {
   return albumApiPromise;
 }
 
-// 四种后端：图库服务 → IndexedDB → 浏览器缓存 → 只在内存里
+/* ---------- 云端图库（Supabase） ---------- */
+
+let cloudCheckPromise = null;
+
+function cloudHeaders(extra) {
+  return Object.assign(
+    {
+      apikey: CLOUD_CONFIG.anonKey,
+      Authorization: "Bearer " + CLOUD_CONFIG.anonKey
+    },
+    extra || {}
+  );
+}
+
+function cloudObjectUrl(path) {
+  return CLOUD_CONFIG.url + "/storage/v1/object/public/" + CLOUD_BUCKET + "/" + path;
+}
+
+// 云端是否可用：能读到表就说明 key、表名、策略都配好了
+async function cloudReady() {
+  if (!CLOUD_CONFIG) return false;
+  if (cloudCheckPromise) return cloudCheckPromise;
+  cloudCheckPromise = (async () => {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller ? window.setTimeout(() => controller.abort(), 4000) : null;
+    try {
+      const response = await fetch(
+        CLOUD_CONFIG.url + "/rest/v1/photos?select=id&limit=1",
+        { headers: cloudHeaders(), cache: "no-store", signal: controller ? controller.signal : undefined }
+      );
+      return response.ok;
+    } catch (error) {
+      return false;
+    } finally {
+      if (timer) window.clearTimeout(timer);
+    }
+  })();
+  return cloudCheckPromise;
+}
+
+async function cloudList() {
+  const response = await fetch(
+    CLOUD_CONFIG.url + "/rest/v1/photos?select=id,name,path,type,size,created_at&order=created_at.desc",
+    { headers: cloudHeaders(), cache: "no-store" }
+  );
+  if (!response.ok) throw new Error("云端列表读取失败");
+  const rows = await response.json();
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
+    type: row.type || "",
+    size: row.size || 0,
+    url: cloudObjectUrl(row.path)
+  }));
+}
+
+async function cloudUploadToLibrary(record) {
+  const id = record.id || ((window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : String(Date.now()));
+  const ext = String(record.type || "image/jpeg").split("/")[1] || "jpg";
+  const path = "p/" + id + "." + ext.replace(/[^a-z0-9]/gi, "") ;
+
+  const upload = await fetch(
+    CLOUD_CONFIG.url + "/storage/v1/object/" + CLOUD_BUCKET + "/" + path,
+    {
+      method: "POST",
+      headers: cloudHeaders({ "Content-Type": record.type || "image/jpeg", "x-upsert": "false" }),
+      body: record.blob
+    }
+  );
+  if (!upload.ok) {
+    const error = new Error("云端没有接住这张图。");
+    error.friendly = true;
+    throw error;
+  }
+
+  const insert = await fetch(CLOUD_CONFIG.url + "/rest/v1/photos", {
+    method: "POST",
+    headers: cloudHeaders({ "Content-Type": "application/json", Prefer: "return=representation" }),
+    body: JSON.stringify({
+      id,
+      name: record.name,
+      path,
+      type: record.type || "image/jpeg",
+      size: record.size || record.blob.size || 0,
+      created_at: new Date().toISOString()
+    })
+  });
+  if (insert.status === 409) {
+    const error = new Error("已经有同名的照片了。");
+    error.friendly = true;
+    throw error;
+  }
+  if (!insert.ok) {
+    const error = new Error("云端清单写入失败。");
+    error.friendly = true;
+    throw error;
+  }
+  return { id, name: record.name, createdAt: Date.now(), type: record.type, size: record.size, url: cloudObjectUrl(path) };
+}
+
+async function cloudRemoveById(id) {
+  let path = "";
+  try {
+    const lookup = await fetch(
+      CLOUD_CONFIG.url + "/rest/v1/photos?id=eq." + encodeURIComponent(id) + "&select=path",
+      { headers: cloudHeaders(), cache: "no-store" }
+    );
+    const rows = await lookup.json();
+    if (Array.isArray(rows) && rows[0]) path = rows[0].path || "";
+  } catch (error) {
+    // 拿不到路径就只删清单
+  }
+
+  const removed = await fetch(
+    CLOUD_CONFIG.url + "/rest/v1/photos?id=eq." + encodeURIComponent(id),
+    { method: "DELETE", headers: cloudHeaders() }
+  );
+  if (!removed.ok) throw new Error("云端删除失败");
+
+  if (path) {
+    await fetch(CLOUD_CONFIG.url + "/storage/v1/object/" + CLOUD_BUCKET + "/" + path, {
+      method: "DELETE",
+      headers: cloudHeaders()
+    }).catch(() => {});
+  }
+}
+
+// 第一次启用云端时，把本地图库和浏览器里已有的照片搬上去
+async function migrateAlbumToCloud() {
+  if (albumMigrated) return;
+  albumMigrated = true;
+
+  const existing = await cloudList().catch(() => []);
+  const taken = new Set(existing.map((photo) => String(photo.name).trim().toLowerCase()));
+  const pending = [];
+
+  try {
+    const response = await fetch(ALBUM_API, { cache: "no-store" });
+    if (response.ok) {
+      const payload = await response.json();
+      (payload.photos || []).forEach((photo) => pending.push(photo));
+    }
+  } catch (error) {
+    // 本机图库没开就跳过
+  }
+
+  const db = await openAlbumDb();
+  if (db) {
+    try {
+      const legacy = await new Promise((resolve, reject) => {
+        const request = db.transaction(ALBUM_STORE, "readonly").objectStore(ALBUM_STORE).getAll();
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      });
+      legacy.forEach((photo) => {
+        if (photo && photo.blob) pending.push(photo);
+      });
+    } catch (error) {
+      // 忽略
+    }
+  }
+
+  for (const photo of pending) {
+    const name = String(photo.name || "").trim();
+    if (!name || taken.has(name.toLowerCase())) continue;
+    try {
+      let blob = photo.blob;
+      if (!blob && photo.url) {
+        const response = await fetch(photo.url);
+        if (!response.ok) continue;
+        blob = await response.blob();
+      }
+      if (!blob) continue;
+      await cloudUploadToLibrary({ name, blob, type: photo.type || blob.type, size: blob.size });
+      taken.add(name.toLowerCase());
+    } catch (error) {
+      // 单张失败跳过
+    }
+  }
+}
+
+// 五种后端：云端 → 本机图库服务 → IndexedDB → 浏览器缓存 → 只在内存里
 async function ensureAlbumBackend() {
   if (albumBackend) return albumBackend;
-  if (await albumApiReady()) {
+  if (await cloudReady()) {
+    albumBackend = "cloud";
+    await migrateAlbumToCloud();
+  } else if (await albumApiReady()) {
     albumBackend = "server";
     await migrateAlbumToServer();
   } else if (await openAlbumDb()) {
@@ -484,6 +676,7 @@ function blobToDataUrl(blob, compress) {
 
 async function albumAll() {
   const backend = await ensureAlbumBackend();
+  if (backend === "cloud") return cloudList();
   if (backend === "server") {
     const response = await fetch(ALBUM_API, { cache: "no-store" });
     const payload = await response.json();
@@ -504,6 +697,9 @@ async function albumAll() {
 
 async function albumPut(record) {
   const backend = await ensureAlbumBackend();
+  if (backend === "cloud") {
+    return cloudUploadToLibrary(record);
+  }
   if (backend === "server") {
     return albumUploadToServer(record);
   }
@@ -538,6 +734,9 @@ async function albumPut(record) {
 
 async function albumRemove(id) {
   const backend = await ensureAlbumBackend();
+  if (backend === "cloud") {
+    return cloudRemoveById(id);
+  }
   if (backend === "server") {
     const response = await fetch(ALBUM_API + "/" + encodeURIComponent(id), { method: "DELETE" });
     if (!response.ok) throw new Error("删除失败");
@@ -578,7 +777,10 @@ function writeAlbumPass(value) {
 async function updatePhotoStorageHint() {
   if (!elements.photoStorage) return;
   const backend = await ensureAlbumBackend();
-  if (backend === "server") {
+  if (backend === "cloud") {
+    elements.photoStorage.textContent = "照片存在云端图库，任何设备打开这个页面都能搜到同一批照片。";
+    elements.photoStorage.dataset.mode = "cloud";
+  } else if (backend === "server") {
     elements.photoStorage.textContent = albumLanUrl
       ? "照片存在这台电脑的 photo-library 里。手机连同一个 Wi-Fi，用 " + albumLanUrl + " 打开，看到的是同一批照片。"
       : "照片存在这台电脑的 photo-library 里，换设备带上整个文件夹就能搜到。";
