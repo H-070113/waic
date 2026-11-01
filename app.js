@@ -2,6 +2,8 @@ const LAKE = { x: -3.2, z: -16.8, rx: 6.8, rz: 4.2, tilt: -0.26 };
 const GROUND_RADIUS = 36;
 const GROUND_FAR_RADIUS = 210;
 const GROUND_BASE_Y = -0.16;
+const LAKE_DEPTH = 0.7;
+const LAKE_WATER_Y = GROUND_BASE_Y - 0.025;
 
 const STORAGE_KEY = "star-isle-park-v1";
 const CARRY_PREFIX = `${STORAGE_KEY}::`;
@@ -241,6 +243,8 @@ const ALBUM_LOCAL_KEY = "star-isle-album-photos";
 const ALBUM_PASS_KEY = "star-isle-album-pass";
 const ALBUM_DEFAULT_PASS = "200701";
 const ALBUM_MAX_SIZE = 12 * 1024 * 1024;
+// 图库接口：照片落在本文件夹的 photo-library/ 里，换设备时跟着文件夹一起走
+const ALBUM_API = "api/photos";
 
 let albumDbPromise = null;
 let albumBackend = null;
@@ -248,6 +252,8 @@ let albumMemory = [];
 let albumUnlocked = false;
 let albumListUrls = [];
 let albumResultUrl = null;
+let albumApiPromise = null;
+let albumMigrated = false;
 
 // 打开 IndexedDB。被浏览器拒绝（iframe、file://、无痕等）时返回 null，交给上层降级
 function openAlbumDb() {
@@ -315,11 +321,37 @@ function writeLocalAlbum(list) {
   window.localStorage.setItem(ALBUM_LOCAL_KEY, JSON.stringify(list));
 }
 
-// 三种后端：IndexedDB → 浏览器缓存 → 只在内存里
+// 图库服务是否在线（用「启动网页.cmd」打开时在线；直接双击 index.html 时不在）
+async function albumApiReady() {
+  if (albumApiPromise) return albumApiPromise;
+  albumApiPromise = (async () => {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const timer = controller ? window.setTimeout(() => controller.abort(), 2500) : null;
+    try {
+      const response = await fetch(ALBUM_API, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller ? controller.signal : undefined
+      });
+      if (!response.ok) return false;
+      const payload = await response.json();
+      return Boolean(payload && payload.ok);
+    } catch (error) {
+      return false;
+    } finally {
+      if (timer) window.clearTimeout(timer);
+    }
+  })();
+  return albumApiPromise;
+}
+
+// 四种后端：图库服务 → IndexedDB → 浏览器缓存 → 只在内存里
 async function ensureAlbumBackend() {
   if (albumBackend) return albumBackend;
-  const db = await openAlbumDb();
-  if (db) {
+  if (await albumApiReady()) {
+    albumBackend = "server";
+    await migrateAlbumToServer();
+  } else if (await openAlbumDb()) {
     albumBackend = "idb";
   } else if (localAlbumAvailable()) {
     albumBackend = "local";
@@ -329,7 +361,89 @@ async function ensureAlbumBackend() {
   return albumBackend;
 }
 
+// 把以前只存在浏览器里的照片搬进图库，免得换了存储就「找不到了」
+async function migrateAlbumToServer() {
+  if (albumMigrated) return;
+  albumMigrated = true;
+  const db = await openAlbumDb();
+  if (!db) return;
+  let legacy = [];
+  try {
+    legacy = await new Promise((resolve, reject) => {
+      const request = db.transaction(ALBUM_STORE, "readonly").objectStore(ALBUM_STORE).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    return;
+  }
+  if (!legacy.length) return;
+
+  let serverList = [];
+  try {
+    const response = await fetch(ALBUM_API, { cache: "no-store" });
+    const payload = await response.json();
+    serverList = Array.isArray(payload && payload.photos) ? payload.photos : [];
+  } catch (error) {
+    return;
+  }
+
+  const taken = new Set(serverList.map((photo) => String(photo.name).trim().toLowerCase()));
+  const moved = [];
+  for (const photo of legacy) {
+    if (!photo || !photo.name || !photo.blob) continue;
+    if (taken.has(String(photo.name).trim().toLowerCase())) {
+      moved.push(photo.id);
+      continue;
+    }
+    try {
+      await albumUploadToServer({ name: photo.name, blob: photo.blob, type: photo.type });
+      moved.push(photo.id);
+      taken.add(String(photo.name).trim().toLowerCase());
+    } catch (error) {
+      // 单张失败就跳过，下次还能再试
+    }
+  }
+
+  if (!moved.length) return;
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(ALBUM_STORE, "readwrite");
+      const store = tx.objectStore(ALBUM_STORE);
+      moved.forEach((id) => store.delete(id));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (error) {
+    // 清不干净也不影响图库
+  }
+}
+
+async function albumUploadToServer(record) {
+  const response = await fetch(ALBUM_API, {
+    method: "POST",
+    headers: {
+      "Content-Type": record.type || "application/octet-stream",
+      "X-Photo-Name": encodeURIComponent(record.name)
+    },
+    body: record.blob
+  });
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = null;
+  }
+  if (!response.ok || !payload || !payload.ok) {
+    const error = new Error(payload && payload.error === "duplicate" ? "已经有同名的照片了。" : "图库没有接住这张图。");
+    error.friendly = true;
+    throw error;
+  }
+  return payload.photo;
+}
+
 function photoSourceFor(photo) {
+  if (photo.url) return photo.url;
   if (photo.blob) return URL.createObjectURL(photo.blob);
   return photo.data || "";
 }
@@ -368,6 +482,11 @@ function blobToDataUrl(blob, compress) {
 
 async function albumAll() {
   const backend = await ensureAlbumBackend();
+  if (backend === "server") {
+    const response = await fetch(ALBUM_API, { cache: "no-store" });
+    const payload = await response.json();
+    return Array.isArray(payload && payload.photos) ? payload.photos : [];
+  }
   if (backend === "idb") {
     const db = await openAlbumDb();
     return new Promise((resolve, reject) => {
@@ -382,6 +501,9 @@ async function albumAll() {
 
 async function albumPut(record) {
   const backend = await ensureAlbumBackend();
+  if (backend === "server") {
+    return albumUploadToServer(record);
+  }
   if (backend === "idb") {
     const db = await openAlbumDb();
     return new Promise((resolve, reject) => {
@@ -413,6 +535,11 @@ async function albumPut(record) {
 
 async function albumRemove(id) {
   const backend = await ensureAlbumBackend();
+  if (backend === "server") {
+    const response = await fetch(ALBUM_API + "/" + encodeURIComponent(id), { method: "DELETE" });
+    if (!response.ok) throw new Error("删除失败");
+    return;
+  }
   if (backend === "idb") {
     const db = await openAlbumDb();
     return new Promise((resolve, reject) => {
@@ -448,8 +575,11 @@ function writeAlbumPass(value) {
 async function updatePhotoStorageHint() {
   if (!elements.photoStorage) return;
   const backend = await ensureAlbumBackend();
-  if (backend === "idb") {
-    elements.photoStorage.textContent = "照片保存在这台设备的浏览器数据库里。";
+  if (backend === "server") {
+    elements.photoStorage.textContent = "照片存在这个文件夹的 photo-library 里，换设备带上整个文件夹就能搜到。";
+    elements.photoStorage.dataset.mode = "server";
+  } else if (backend === "idb") {
+    elements.photoStorage.textContent = "图库服务没开，照片暂存在这台设备的浏览器数据库里。";
     elements.photoStorage.dataset.mode = "idb";
   } else if (backend === "local") {
     elements.photoStorage.textContent = "本地数据库不可用，照片改存浏览器缓存（会自动压缩）。";
@@ -649,6 +779,10 @@ async function submitPhotoUpload(event) {
     await renderAlbumList();
   } catch (error) {
     const quota = error && (error.name === "QuotaExceededError" || String(error.message).indexOf("quota") >= 0);
+    if (error && error.friendly) {
+      setAlbumMessage(elements.photoUploadMessage, error.message, "error");
+      return;
+    }
     setAlbumMessage(
       elements.photoUploadMessage,
       quota
@@ -2207,6 +2341,15 @@ function applySkyPeriod(isDay) {
       material.color.setHex(wet ? 0xb9a68d : 0xffe0b8);
     });
 
+    const lakeWater = world.scene.userData.lakeWater;
+    if (lakeWater) {
+      const rainy = kind === "rain" || kind === "storm";
+      lakeWater.uDeep.value.setHex(isDay ? (overcast ? 0x0c2429 : 0x0e2c31) : 0x03100e);
+      lakeWater.uShallow.value.setHex(isDay ? (overcast ? 0x17342c : 0x174130) : 0x061c16);
+      lakeWater.uSky.value.setHex(isDay ? (overcast ? 0x9fb3c2 : 0xb2d3ea) : 0x2f4266);
+      lakeWater.uChop.value = rainy ? 2.1 : 1;
+    }
+
     if (world.rain) {
       const rainy = kind === "rain" || kind === "storm";
       const count = rainy ? Math.min(world.rain.maxCount, rainCountForWeather(code)) : 0;
@@ -3067,11 +3210,28 @@ function groundNoise(x, y) {
   return top * (1 - v) + bottom * v - 0.5;
 }
 
+// 湖盆：真正的下凹地形。岸线按角度轻轻推一下，避免标准椭圆的塑料感
+function lakeBasinAt(x, z) {
+  const deltaX = x - LAKE.x;
+  const deltaZ = z - LAKE.z;
+  const cos = Math.cos(LAKE.tilt);
+  const sin = Math.sin(LAKE.tilt);
+  const localX = deltaX * cos - deltaZ * sin;
+  const localZ = deltaX * sin + deltaZ * cos;
+  const distance = Math.hypot(localX / LAKE.rx, localZ / LAKE.rz);
+  if (distance >= 1.03) return 0;
+  const angle = Math.atan2(localZ / LAKE.rz, localX / LAKE.rx);
+  const wobble = 1 + Math.sin(angle * 3 + 0.7) * 0.034 + Math.sin(angle * 5 - 1.1) * 0.021;
+  const t = Math.max(0, 1 - distance / wobble);
+  return -LAKE_DEPTH * Math.pow(t, 0.62);
+}
+
 // 地形高度：中心保持平整，外圈缓缓抬起成丘陵；设施与湖面处压平
 function groundHeightAt(x, z) {
   const radius = Math.hypot(x, z);
   const rim = groundSmoothstep(23, 34, radius);
-  if (rim <= 0) return GROUND_BASE_Y;
+  const basin = lakeBasinAt(x, z);
+  if (rim <= 0) return GROUND_BASE_Y + basin;
 
   let height =
     (groundNoise(x * 0.045, z * 0.045) + groundNoise(x * 0.11 + 4, z * 0.11 - 2) * 0.5) *
@@ -3088,7 +3248,7 @@ function groundHeightAt(x, z) {
     height *= groundSmoothstep(zone.r, zone.r + zone.soft, distance);
   }
 
-  return GROUND_BASE_Y + height;
+  return GROUND_BASE_Y + height + basin;
 }
 
 // 程序化草地贴图：大块色斑 + 细颗粒，四向平铺无缝
@@ -3189,7 +3349,7 @@ function buildGroundMesh(innerRadius, outerRadius, radialSegments, heightBias) {
 }
 
 function addGround(scene) {
-  const ground = buildGroundMesh(0.001, GROUND_RADIUS, 76, 0);
+  const ground = buildGroundMesh(0.001, GROUND_RADIUS, 150, 0);
   ground.receiveShadow = true;
   scene.add(ground);
 
@@ -3330,52 +3490,146 @@ function addPlaza(scene) {
   scene.add(forecourtCurb);
 }
 
+// 贴着地形做的湖床：跟湖盆凹陷严丝合缝，岸边自然形成一圈湿泥
+function buildLakeBowl(innerRadius, outerRadius, segments, rings, lift) {
+  const geometry = new THREE.RingGeometry(innerRadius, outerRadius, segments, rings);
+  geometry.rotateX(-Math.PI / 2);
+  const position = geometry.attributes.position;
+  const cos = Math.cos(LAKE.tilt);
+  const sin = Math.sin(LAKE.tilt);
+  for (let index = 0; index < position.count; index += 1) {
+    const localX = position.getX(index) * LAKE.rx;
+    const localZ = position.getZ(index) * LAKE.rz;
+    const worldX = LAKE.x + localX * cos + localZ * sin;
+    const worldZ = LAKE.z - localX * sin + localZ * cos;
+    position.setX(index, localX);
+    position.setZ(index, localZ);
+    position.setY(index, groundHeightAt(worldX, worldZ) + lift);
+  }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function addLake(scene) {
   const group = new THREE.Group();
   group.position.set(LAKE.x, 0, LAKE.z);
   group.rotation.y = LAKE.tilt;
   scene.add(group);
 
-  // 岸坡：比水面宽一圈的湿土带
-  const bank = new THREE.Mesh(
-    new THREE.RingGeometry(0.97, 1.09, 80),
-    standardMaterial(0x1b241a, 0.06, 0.95)
+  // 湖床：铺满整个湖盆并爬到岸边，水下的草皮全部盖成淤泥
+  const bed = new THREE.Mesh(
+    buildLakeBowl(0.001, 1.06, 128, 20, 0.022),
+    standardMaterial(0x161a12, 0.02, 0.99)
   );
-  bank.rotation.x = -Math.PI / 2;
-  bank.scale.set(LAKE.rx, LAKE.rz, 1);
-  bank.position.y = -0.15;
-  bank.receiveShadow = true;
-  group.add(bank);
+  bed.receiveShadow = true;
+  group.add(bed);
 
-  const water = new THREE.Mesh(
-    new THREE.CircleGeometry(1, 90),
-    new THREE.MeshPhysicalMaterial({
-      color: 0x081a1e,
-      metalness: 0.62,
-      roughness: 0.1,
-      clearcoat: 0.85,
-      clearcoatRoughness: 0.1
-    })
-  );
-  water.rotation.x = -Math.PI / 2;
-  water.scale.set(LAKE.rx * 0.97, LAKE.rz * 0.97, 1);
-  water.position.y = -0.125;
-  group.add(water);
+  // 水面：涟漪、菲涅尔天光、深浅过渡全部在着色器里算，不再是一块纯色圆片
+  const lakeUniforms = {
+    uTime: { value: 0 },
+    uChop: { value: 1 },
+    uDeep: { value: new THREE.Color(0x03100e) },
+    uShallow: { value: new THREE.Color(0x061c16) },
+    uSky: { value: new THREE.Color(0x33496e) },
+    uCenter: { value: new THREE.Vector2(LAKE.x, LAKE.z) },
+    uRadius: { value: new THREE.Vector2(LAKE.rx, LAKE.rz) },
+    uTilt: { value: LAKE.tilt }
+  };
+  scene.userData.lakeWater = lakeUniforms;
 
-  // 近岸加深：水与草之间留一道暗边，避免像一只塑料盆
-  [
-    [0.88, 0.975, 0.36],
-    [0.74, 0.88, 0.16]
-  ].forEach(([inner, outer, opacity]) => {
-    const shade = new THREE.Mesh(
-      new THREE.RingGeometry(inner, outer, 80),
-      new THREE.MeshBasicMaterial({ color: 0x02090b, transparent: true, opacity, depthWrite: false })
-    );
-    shade.rotation.x = -Math.PI / 2;
-    shade.scale.set(LAKE.rx * 0.97, LAKE.rz * 0.97, 1);
-    shade.position.y = -0.122;
-    group.add(shade);
+  const waterMaterial = new THREE.MeshPhysicalMaterial({
+    color: 0x0b2429,
+    metalness: 0,
+    roughness: 0.28,
+    clearcoat: 0.2,
+    clearcoatRoughness: 0.2,
+    envMapIntensity: 0.35,
+    reflectivity: 0.22,
+    transparent: true,
+    opacity: 0.94
   });
+
+  waterMaterial.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, lakeUniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vLakeWorld;")
+      .replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\nvLakeWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;"
+      );
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+uniform float uTime;
+uniform float uChop;
+uniform vec3 uDeep;
+uniform vec3 uShallow;
+uniform vec3 uSky;
+uniform vec2 uCenter;
+uniform vec2 uRadius;
+uniform float uTilt;
+varying vec3 vLakeWorld;
+
+// 几层错开的波，叠起来才不像规则条纹
+float lakeWave(vec2 p) {
+  float t = uTime;
+  vec2 dirA = normalize(vec2(0.92, 0.39));
+  vec2 dirB = normalize(vec2(-0.34, 0.94));
+  vec2 dirC = normalize(vec2(0.62, -0.78));
+  float h = sin(dot(p, dirA) * 3.1 + t * 1.05) * 0.3;
+  h += sin(dot(p, dirB) * 4.7 - t * 0.86) * 0.22;
+  h += sin(dot(p, dirC) * 6.9 + t * 1.42) * 0.12;
+  h += sin(dot(p, dirA) * 9.3 - t * 1.9) * 0.06;
+  h += sin(dot(p, dirB) * 13.1 + t * 2.4) * 0.03;
+  return h * uChop;
+}
+
+vec2 lakeLocal(vec2 worldPos) {
+  vec2 delta = worldPos - uCenter;
+  float c = cos(uTilt);
+  float s = sin(uTilt);
+  return vec2(delta.x * c - delta.y * s, delta.x * s + delta.y * c) / uRadius;
+}`
+      )
+      .replace(
+        "#include <normal_fragment_begin>",
+        `#include <normal_fragment_begin>
+  vec2 lakePos = vLakeWorld.xz;
+  float lakeEps = 0.06;
+  float lakeH0 = lakeWave(lakePos);
+  float lakeDx = (lakeWave(lakePos + vec2(lakeEps, 0.0)) - lakeH0) / lakeEps;
+  float lakeDz = (lakeWave(lakePos + vec2(0.0, lakeEps)) - lakeH0) / lakeEps;
+  vec3 lakeNormal = normalize(vec3(-lakeDx * 0.1, 1.0, -lakeDz * 0.1));
+  normal = normalize((viewMatrix * vec4(lakeNormal, 0.0)).xyz);
+  geometryNormal = normal;`
+      )
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>
+  float lakeR = clamp(length(lakeLocal(vLakeWorld.xz)), 0.0, 1.0);
+  float lakeShore = smoothstep(0.7, 1.0, lakeR);
+  vec3 lakeTint = mix(uDeep, uShallow, lakeShore);
+  diffuseColor.rgb = lakeTint;
+  diffuseColor.a *= mix(0.94, 0.74, smoothstep(0.78, 1.0, lakeR));`
+      )
+      .replace(
+        "#include <emissivemap_fragment>",
+        `#include <emissivemap_fragment>
+  float lakeFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 4.0);
+  totalEmissiveRadiance += uSky * lakeFresnel * 0.2;`
+      );
+
+    waterMaterial.userData.shader = shader;
+  };
+
+  const water = new THREE.Mesh(new THREE.CircleGeometry(1, 112), waterMaterial);
+  water.rotation.x = -Math.PI / 2;
+  water.scale.set(LAKE.rx * 1.05, LAKE.rz * 1.05, 1);
+  water.position.y = LAKE_WATER_Y;
+  water.renderOrder = 2;
+  group.add(water);
 
   // 岸边石块：半埋，大小不一
   const rockMat = standardMaterial(0x212319, 0.12, 0.9);
@@ -6698,6 +6952,8 @@ function animateWorlds() {
 
   if (overviewWorld) {
     updateRain(overviewWorld, delta);
+    const lakeWater = overviewWorld.scene.userData.lakeWater;
+    if (lakeWater) lakeWater.uTime.value = modelTime;
     Object.values(overviewWorld.rides).forEach((ride) => ride.update(modelTime));
     overviewWorld.renderer.render(overviewWorld.scene, overviewWorld.camera);
     positionMapMarkers();
