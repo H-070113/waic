@@ -1,3 +1,20 @@
 {
-  "photos": []
+  "photos": [
+    {
+      "id": "669c64944d574b3eaea8acb7cc6aec88",
+      "name": "butterfly",
+      "file": "669c64944d574b3eaea8acb7cc6aec88.jpg",
+      "type": "image/jpeg",
+      "size": 11030,
+      "createdAt": 1793522315569
+    },
+    {
+      "id": "5b56b8ee7d9045f79f830e81da178be8",
+      "name": "错觉",
+      "file": "5b56b8ee7d9045f79f830e81da178be8.png",
+      "type": "image/png",
+      "size": 6764079,
+      "createdAt": 1793526546803
+    }
+  ]
 }

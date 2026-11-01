@@ -232,7 +232,12 @@ const elements = {
   photoNewPass: document.getElementById("photoNewPass"),
   photoPassMessage: document.getElementById("photoPassMessage"),
   photoChangePassButton: document.getElementById("photoChangePassButton"),
-  photoLockButton: document.getElementById("photoLockButton")
+  photoLockButton: document.getElementById("photoLockButton"),
+  photoWall: document.getElementById("photoWall"),
+  photoWallToggle: document.getElementById("photoWallToggle"),
+  photoGrid: document.getElementById("photoGrid"),
+  photoWallCount: document.getElementById("photoWallCount"),
+  photoWallLock: document.getElementById("photoWallLock")
 };
 
 /* ---------- 旋转木马相册：图片存在 IndexedDB，密码存在 localStorage ---------- */
@@ -262,6 +267,8 @@ let albumResultUrl = null;
 let albumApiPromise = null;
 let albumMigrated = false;
 let albumLanUrl = "";
+let albumWallPending = false;
+let albumWallUrls = [];
 
 // 打开 IndexedDB。被浏览器拒绝（iframe、file://、无痕等）时返回 null，交给上层降级
 function openAlbumDb() {
@@ -862,6 +869,78 @@ async function runPhotoSearch(event) {
   }
 }
 
+/* ---------- 管理员照片墙：嵌在相册面板里的全部照片 ---------- */
+
+function releaseWallUrls() {
+  albumWallUrls.forEach((url) => URL.revokeObjectURL(url));
+  albumWallUrls = [];
+}
+
+function wallUrlFor(photo) {
+  const url = photoSourceFor(photo);
+  if (url.indexOf("blob:") === 0) albumWallUrls.push(url);
+  return url;
+}
+
+async function renderPhotoWall() {
+  const grid = elements.photoGrid;
+  if (!grid) return;
+  releaseWallUrls();
+  grid.innerHTML = "";
+
+  let photos = [];
+  try {
+    photos = await albumAll();
+  } catch (error) {
+    grid.innerHTML = '<p class="photo-grid-empty">相册读取失败。</p>';
+    return;
+  }
+  photos.sort((a, b) => b.createdAt - a.createdAt);
+  elements.photoWallCount.textContent = photos.length ? "共 " + photos.length + " 张" : "还没有照片";
+  if (!photos.length) {
+    grid.innerHTML = '<p class="photo-grid-empty">还没有照片。上传一张，并给它起个名字。</p>';
+    return;
+  }
+
+  photos.forEach((photo) => {
+    const figure = document.createElement("figure");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.title = photo.name;
+
+    const image = document.createElement("img");
+    image.src = wallUrlFor(photo);
+    image.alt = photo.name;
+    image.loading = "lazy";
+    button.appendChild(image);
+
+    button.addEventListener("click", () => {
+      showPhotoResult(photo);
+      if (elements.photoResult && elements.photoResult.scrollIntoView) {
+        elements.photoResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    });
+
+    const caption = document.createElement("figcaption");
+    caption.textContent = photo.name;
+
+    figure.appendChild(button);
+    figure.appendChild(caption);
+    grid.appendChild(figure);
+  });
+}
+
+function setPhotoWallVisible(visible) {
+  if (!elements.photoWall) return;
+  elements.photoWall.hidden = !visible;
+  elements.photoWallToggle.classList.toggle("is-active", visible);
+  if (visible) {
+    renderPhotoWall();
+  } else {
+    releaseWallUrls();
+  }
+}
+
 function hidePhotoAdminBody() {
   elements.photoGate.hidden = false;
   elements.photoAdminBody.hidden = true;
@@ -934,6 +1013,7 @@ async function renderAlbumList() {
       try {
         await albumRemove(photo.id);
         await renderAlbumList();
+        if (elements.photoWall && !elements.photoWall.hidden) renderPhotoWall();
         if (elements.photoResultName.textContent === photo.name) hidePhotoResult();
         setAlbumMessage(elements.photoUploadMessage, "已删除「" + photo.name + "」。", "ok");
       } catch (error) {
@@ -984,6 +1064,7 @@ async function submitPhotoUpload(event) {
     elements.photoFileInput.value = "";
     setAlbumMessage(elements.photoUploadMessage, "已保存「" + name + "」。", "ok");
     await renderAlbumList();
+    if (elements.photoWall && !elements.photoWall.hidden) renderPhotoWall();
   } catch (error) {
     const quota = error && (error.name === "QuotaExceededError" || String(error.message).indexOf("quota") >= 0);
     if (error && error.friendly) {
@@ -1016,6 +1097,10 @@ function submitPhotoGate(event) {
   setAlbumMessage(elements.photoGateMessage, "", "");
   elements.photoPassInput.value = "";
   showPhotoAdminBody();
+  if (albumWallPending) {
+    albumWallPending = false;
+    setPhotoWallVisible(true);
+  }
 }
 
 function submitPhotoPass(event) {
@@ -1042,6 +1127,17 @@ function initPhotoAlbum() {
 
   elements.photoSearchForm.addEventListener("submit", runPhotoSearch);
   elements.photoAdminEntry.addEventListener("click", openPhotoAdmin);
+
+  elements.photoWallToggle.addEventListener("click", () => {
+    if (!albumUnlocked) {
+      albumWallPending = true;
+      openPhotoAdmin();
+      return;
+    }
+    setPhotoWallVisible(elements.photoWall.hidden);
+  });
+
+  elements.photoWallLock.addEventListener("click", () => setPhotoWallVisible(false));
   elements.photoGateForm.addEventListener("submit", submitPhotoGate);
   elements.photoUploadForm.addEventListener("submit", submitPhotoUpload);
   elements.photoPassForm.addEventListener("submit", submitPhotoPass);
@@ -1059,6 +1155,7 @@ function initPhotoAlbum() {
   });
 
   elements.photoAdminDialog.addEventListener("close", () => {
+    albumWallPending = false;
     releaseListUrls();
     setAlbumMessage(elements.photoGateMessage, "");
     setAlbumMessage(elements.photoUploadMessage, "");

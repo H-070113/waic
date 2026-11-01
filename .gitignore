@@ -1,5 +1,3 @@
 .DS_Store
 Thumbs.db
 __pycache__/
-photo-library/*
-!photo-library/index.json

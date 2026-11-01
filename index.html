@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#071a1d">
   <meta name="description" content="心之所向——一座可以从上帝视角漫游并写下简述的私人游乐园。">
   <title>心 · 夜游</title>
-  <link rel="stylesheet" href="styles.css?v=20261101-04">
+  <link rel="stylesheet" href="styles.css?v=20261101-05">
 </head>
 <body>
   <div class="app-shell" id="appShell">
@@ -270,7 +270,10 @@
                 <p class="photo-kicker">MEMORY ALBUM</p>
                 <h3>相册</h3>
               </div>
-              <button type="button" class="photo-admin-entry" id="photoAdminEntry">管理</button>
+              <div class="photo-panel-actions">
+                <button type="button" class="photo-admin-entry" id="photoWallToggle">全部</button>
+                <button type="button" class="photo-admin-entry" id="photoAdminEntry">管理</button>
+              </div>
             </div>
             <form class="photo-search" id="photoSearchForm">
               <label class="sr-only" for="photoSearchInput">输入照片名字</label>
@@ -292,6 +295,14 @@
                 <span id="photoResultDate"></span>
               </figcaption>
             </figure>
+
+            <section class="photo-wall" id="photoWall" hidden aria-label="全部照片">
+              <div class="photo-wall-head">
+                <span class="photo-wall-count" id="photoWallCount"></span>
+                <button type="button" class="photo-ghost-button" id="photoWallLock">收起</button>
+              </div>
+              <div class="photo-grid" id="photoGrid"></div>
+            </section>
           </section>
 
           <form id="briefForm">
@@ -511,6 +522,6 @@
   <script src="assets/vendor/GLTFLoader.js"></script>
   <script src="assets/music/playlist.js?v=20261029-11"></script>
   <script src="supabase-config.js"></script>
-  <script src="app.js?v=20261101-09"></script>
+  <script src="app.js?v=20261101-10"></script>
 </body>
 </html>
