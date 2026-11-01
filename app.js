@@ -207,32 +207,17 @@ const elements = {
   clearMusicLibrary: document.getElementById("clearMusicLibrary"),
   toast: document.getElementById("toast"),
   photoPanel: document.getElementById("photoPanel"),
-  photoAdminEntry: document.getElementById("photoAdminEntry"),
   photoSearchForm: document.getElementById("photoSearchForm"),
   photoSearchInput: document.getElementById("photoSearchInput"),
   photoMessage: document.getElementById("photoMessage"),
-  photoStorage: document.getElementById("photoStorage"),
   photoResult: document.getElementById("photoResult"),
   photoResultImage: document.getElementById("photoResultImage"),
   photoResultName: document.getElementById("photoResultName"),
   photoResultDate: document.getElementById("photoResultDate"),
   photoAdminDialog: document.getElementById("photoAdminDialog"),
-  photoGate: document.getElementById("photoGate"),
   photoGateForm: document.getElementById("photoGateForm"),
   photoPassInput: document.getElementById("photoPassInput"),
   photoGateMessage: document.getElementById("photoGateMessage"),
-  photoAdminBody: document.getElementById("photoAdminBody"),
-  photoUploadForm: document.getElementById("photoUploadForm"),
-  photoNameInput: document.getElementById("photoNameInput"),
-  photoFileInput: document.getElementById("photoFileInput"),
-  photoUploadMessage: document.getElementById("photoUploadMessage"),
-  photoList: document.getElementById("photoList"),
-  photoPassForm: document.getElementById("photoPassForm"),
-  photoOldPass: document.getElementById("photoOldPass"),
-  photoNewPass: document.getElementById("photoNewPass"),
-  photoPassMessage: document.getElementById("photoPassMessage"),
-  photoChangePassButton: document.getElementById("photoChangePassButton"),
-  photoLockButton: document.getElementById("photoLockButton"),
   photoWall: document.getElementById("photoWall"),
   photoWallToggle: document.getElementById("photoWallToggle"),
   photoGrid: document.getElementById("photoGrid"),
@@ -240,530 +225,12 @@ const elements = {
   photoWallLock: document.getElementById("photoWallLock")
 };
 
-/* ---------- 旋转木马相册：图片存在 IndexedDB，密码存在 localStorage ---------- */
+/* ---------- 旋转木马相册：照片内嵌在 album-data.js，页面不做上传 ---------- */
 
-const ALBUM_DB_NAME = "star-isle-album";
-const ALBUM_STORE = "photos";
-const ALBUM_LOCAL_KEY = "star-isle-album-photos";
 const ALBUM_PASS_KEY = "star-isle-album-pass";
 const ALBUM_DEFAULT_PASS = "200701";
-const ALBUM_MAX_SIZE = 12 * 1024 * 1024;
-// 图库接口：照片落在本文件夹的 photo-library/ 里，换设备时跟着文件夹一起走
-const ALBUM_API = "api/photos";
 
-// 云端图库（Supabase）。supabase-config.js 里填了网址和 anon key 就会启用，
-// 这时任何设备打开同一个页面看到的都是同一批照片。
-const CLOUD_CONFIG = (window.STAR_ISLE_SUPABASE && window.STAR_ISLE_SUPABASE.url && window.STAR_ISLE_SUPABASE.anonKey)
-  ? window.STAR_ISLE_SUPABASE
-  : null;
-const CLOUD_BUCKET = (CLOUD_CONFIG && CLOUD_CONFIG.bucket) || "album";
-
-let albumDbPromise = null;
-let albumBackend = null;
-let albumMemory = [];
 let albumUnlocked = false;
-let albumListUrls = [];
-let albumResultUrl = null;
-let albumApiPromise = null;
-let albumMigrated = false;
-let albumLanUrl = "";
-let albumWallPending = false;
-let albumWallUrls = [];
-
-// 打开 IndexedDB。被浏览器拒绝（iframe、file://、无痕等）时返回 null，交给上层降级
-function openAlbumDb() {
-  if (albumDbPromise) return albumDbPromise;
-  albumDbPromise = new Promise((resolve) => {
-    if (!window.indexedDB) {
-      resolve(null);
-      return;
-    }
-    let request;
-    try {
-      request = window.indexedDB.open(ALBUM_DB_NAME, 1);
-    } catch (error) {
-      resolve(null);
-      return;
-    }
-    // 有些环境（沙箱 iframe、无痕模式）会让 open 一直不回调，加个兜底超时
-    let settled = false;
-    let timer = null;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      window.clearTimeout(timer);
-      resolve(value);
-    };
-    timer = window.setTimeout(() => finish(null), 4000);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(ALBUM_STORE)) {
-        const store = db.createObjectStore(ALBUM_STORE, { keyPath: "id" });
-        store.createIndex("name", "name", { unique: false });
-      }
-    };
-    request.onsuccess = () => finish(request.result);
-    request.onerror = () => finish(null);
-    request.onblocked = () => finish(null);
-  });
-  return albumDbPromise;
-}
-
-function localAlbumAvailable() {
-  try {
-    const probe = "__star_isle_album_probe__";
-    window.localStorage.setItem(probe, "1");
-    window.localStorage.removeItem(probe);
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
-
-function readLocalAlbum() {
-  try {
-    const raw = window.localStorage.getItem(ALBUM_LOCAL_KEY);
-    if (!raw) return [];
-    const list = JSON.parse(raw);
-    return Array.isArray(list) ? list : [];
-  } catch (error) {
-    return [];
-  }
-}
-
-function writeLocalAlbum(list) {
-  window.localStorage.setItem(ALBUM_LOCAL_KEY, JSON.stringify(list));
-}
-
-// 图库服务是否在线（用「启动网页.cmd」打开时在线；直接双击 index.html 时不在）
-async function albumApiReady() {
-  if (albumApiPromise) return albumApiPromise;
-  albumApiPromise = (async () => {
-    const controller = typeof AbortController === "function" ? new AbortController() : null;
-    const timer = controller ? window.setTimeout(() => controller.abort(), 2500) : null;
-    try {
-      const response = await fetch(ALBUM_API, {
-        method: "GET",
-        cache: "no-store",
-        signal: controller ? controller.signal : undefined
-      });
-      if (!response.ok) return false;
-      const payload = await response.json();
-      if (payload && payload.lan) albumLanUrl = String(payload.lan).replace(/index\.html$/, "");
-      return Boolean(payload && payload.ok);
-    } catch (error) {
-      return false;
-    } finally {
-      if (timer) window.clearTimeout(timer);
-    }
-  })();
-  return albumApiPromise;
-}
-
-/* ---------- 云端图库（Supabase） ---------- */
-
-let cloudCheckPromise = null;
-
-function cloudHeaders(extra) {
-  return Object.assign(
-    {
-      apikey: CLOUD_CONFIG.anonKey,
-      Authorization: "Bearer " + CLOUD_CONFIG.anonKey
-    },
-    extra || {}
-  );
-}
-
-function cloudObjectUrl(path) {
-  return CLOUD_CONFIG.url + "/storage/v1/object/public/" + CLOUD_BUCKET + "/" + path;
-}
-
-// 云端是否可用：能读到表就说明 key、表名、策略都配好了
-async function cloudReady() {
-  if (!CLOUD_CONFIG) return false;
-  if (cloudCheckPromise) return cloudCheckPromise;
-  cloudCheckPromise = (async () => {
-    const controller = typeof AbortController === "function" ? new AbortController() : null;
-    const timer = controller ? window.setTimeout(() => controller.abort(), 4000) : null;
-    try {
-      const response = await fetch(
-        CLOUD_CONFIG.url + "/rest/v1/photos?select=id&limit=1",
-        { headers: cloudHeaders(), cache: "no-store", signal: controller ? controller.signal : undefined }
-      );
-      return response.ok;
-    } catch (error) {
-      return false;
-    } finally {
-      if (timer) window.clearTimeout(timer);
-    }
-  })();
-  return cloudCheckPromise;
-}
-
-async function cloudList() {
-  const response = await fetch(
-    CLOUD_CONFIG.url + "/rest/v1/photos?select=id,name,path,type,size,created_at&order=created_at.desc",
-    { headers: cloudHeaders(), cache: "no-store" }
-  );
-  if (!response.ok) throw new Error("云端列表读取失败");
-  const rows = await response.json();
-  return (Array.isArray(rows) ? rows : []).map((row) => ({
-    id: row.id,
-    name: row.name,
-    createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
-    type: row.type || "",
-    size: row.size || 0,
-    url: cloudObjectUrl(row.path)
-  }));
-}
-
-async function cloudUploadToLibrary(record) {
-  const id = record.id || ((window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : String(Date.now()));
-  const ext = String(record.type || "image/jpeg").split("/")[1] || "jpg";
-  const path = "p/" + id + "." + ext.replace(/[^a-z0-9]/gi, "") ;
-
-  const upload = await fetch(
-    CLOUD_CONFIG.url + "/storage/v1/object/" + CLOUD_BUCKET + "/" + path,
-    {
-      method: "POST",
-      headers: cloudHeaders({ "Content-Type": record.type || "image/jpeg", "x-upsert": "false" }),
-      body: record.blob
-    }
-  );
-  if (!upload.ok) {
-    const error = new Error("云端没有接住这张图。");
-    error.friendly = true;
-    throw error;
-  }
-
-  const insert = await fetch(CLOUD_CONFIG.url + "/rest/v1/photos", {
-    method: "POST",
-    headers: cloudHeaders({ "Content-Type": "application/json", Prefer: "return=representation" }),
-    body: JSON.stringify({
-      id,
-      name: record.name,
-      path,
-      type: record.type || "image/jpeg",
-      size: record.size || record.blob.size || 0,
-      created_at: new Date().toISOString()
-    })
-  });
-  if (insert.status === 409) {
-    const error = new Error("已经有同名的照片了。");
-    error.friendly = true;
-    throw error;
-  }
-  if (!insert.ok) {
-    const error = new Error("云端清单写入失败。");
-    error.friendly = true;
-    throw error;
-  }
-  return { id, name: record.name, createdAt: Date.now(), type: record.type, size: record.size, url: cloudObjectUrl(path) };
-}
-
-async function cloudRemoveById(id) {
-  let path = "";
-  try {
-    const lookup = await fetch(
-      CLOUD_CONFIG.url + "/rest/v1/photos?id=eq." + encodeURIComponent(id) + "&select=path",
-      { headers: cloudHeaders(), cache: "no-store" }
-    );
-    const rows = await lookup.json();
-    if (Array.isArray(rows) && rows[0]) path = rows[0].path || "";
-  } catch (error) {
-    // 拿不到路径就只删清单
-  }
-
-  const removed = await fetch(
-    CLOUD_CONFIG.url + "/rest/v1/photos?id=eq." + encodeURIComponent(id),
-    { method: "DELETE", headers: cloudHeaders() }
-  );
-  if (!removed.ok) throw new Error("云端删除失败");
-
-  if (path) {
-    await fetch(CLOUD_CONFIG.url + "/storage/v1/object/" + CLOUD_BUCKET + "/" + path, {
-      method: "DELETE",
-      headers: cloudHeaders()
-    }).catch(() => {});
-  }
-}
-
-// 第一次启用云端时，把本地图库和浏览器里已有的照片搬上去
-async function migrateAlbumToCloud() {
-  if (albumMigrated) return;
-  albumMigrated = true;
-
-  const existing = await cloudList().catch(() => []);
-  const taken = new Set(existing.map((photo) => String(photo.name).trim().toLowerCase()));
-  const pending = [];
-
-  try {
-    const response = await fetch(ALBUM_API, { cache: "no-store" });
-    if (response.ok) {
-      const payload = await response.json();
-      (payload.photos || []).forEach((photo) => pending.push(photo));
-    }
-  } catch (error) {
-    // 本机图库没开就跳过
-  }
-
-  const db = await openAlbumDb();
-  if (db) {
-    try {
-      const legacy = await new Promise((resolve, reject) => {
-        const request = db.transaction(ALBUM_STORE, "readonly").objectStore(ALBUM_STORE).getAll();
-        request.onsuccess = () => resolve(request.result || []);
-        request.onerror = () => reject(request.error);
-      });
-      legacy.forEach((photo) => {
-        if (photo && photo.blob) pending.push(photo);
-      });
-    } catch (error) {
-      // 忽略
-    }
-  }
-
-  for (const photo of pending) {
-    const name = String(photo.name || "").trim();
-    if (!name || taken.has(name.toLowerCase())) continue;
-    try {
-      let blob = photo.blob;
-      if (!blob && photo.url) {
-        const response = await fetch(photo.url);
-        if (!response.ok) continue;
-        blob = await response.blob();
-      }
-      if (!blob) continue;
-      await cloudUploadToLibrary({ name, blob, type: photo.type || blob.type, size: blob.size });
-      taken.add(name.toLowerCase());
-    } catch (error) {
-      // 单张失败跳过
-    }
-  }
-}
-
-// 五种后端：云端 → 本机图库服务 → IndexedDB → 浏览器缓存 → 只在内存里
-async function ensureAlbumBackend() {
-  if (albumBackend) return albumBackend;
-  if (await cloudReady()) {
-    albumBackend = "cloud";
-    await migrateAlbumToCloud();
-  } else if (await albumApiReady()) {
-    albumBackend = "server";
-    await migrateAlbumToServer();
-  } else if (await openAlbumDb()) {
-    albumBackend = "idb";
-  } else if (localAlbumAvailable()) {
-    albumBackend = "local";
-  } else {
-    albumBackend = "memory";
-  }
-  return albumBackend;
-}
-
-// 把以前只存在浏览器里的照片搬进图库，免得换了存储就「找不到了」
-async function migrateAlbumToServer() {
-  if (albumMigrated) return;
-  albumMigrated = true;
-  const db = await openAlbumDb();
-  if (!db) return;
-  let legacy = [];
-  try {
-    legacy = await new Promise((resolve, reject) => {
-      const request = db.transaction(ALBUM_STORE, "readonly").objectStore(ALBUM_STORE).getAll();
-      request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
-    });
-  } catch (error) {
-    return;
-  }
-  if (!legacy.length) return;
-
-  let serverList = [];
-  try {
-    const response = await fetch(ALBUM_API, { cache: "no-store" });
-    const payload = await response.json();
-    serverList = Array.isArray(payload && payload.photos) ? payload.photos : [];
-  } catch (error) {
-    return;
-  }
-
-  const taken = new Set(serverList.map((photo) => String(photo.name).trim().toLowerCase()));
-  const moved = [];
-  for (const photo of legacy) {
-    if (!photo || !photo.name || !photo.blob) continue;
-    if (taken.has(String(photo.name).trim().toLowerCase())) {
-      moved.push(photo.id);
-      continue;
-    }
-    try {
-      await albumUploadToServer({ name: photo.name, blob: photo.blob, type: photo.type });
-      moved.push(photo.id);
-      taken.add(String(photo.name).trim().toLowerCase());
-    } catch (error) {
-      // 单张失败就跳过，下次还能再试
-    }
-  }
-
-  if (!moved.length) return;
-  try {
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(ALBUM_STORE, "readwrite");
-      const store = tx.objectStore(ALBUM_STORE);
-      moved.forEach((id) => store.delete(id));
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (error) {
-    // 清不干净也不影响图库
-  }
-}
-
-async function albumUploadToServer(record) {
-  const response = await fetch(ALBUM_API, {
-    method: "POST",
-    headers: {
-      "Content-Type": record.type || "application/octet-stream",
-      "X-Photo-Name": encodeURIComponent(record.name)
-    },
-    body: record.blob
-  });
-  let payload = null;
-  try {
-    payload = await response.json();
-  } catch (error) {
-    payload = null;
-  }
-  if (!response.ok || !payload || !payload.ok) {
-    const error = new Error(payload && payload.error === "duplicate" ? "已经有同名的照片了。" : "图库没有接住这张图。");
-    error.friendly = true;
-    throw error;
-  }
-  return payload.photo;
-}
-
-function photoSourceFor(photo) {
-  if (photo.url) return photo.url;
-  if (photo.blob) return URL.createObjectURL(photo.blob);
-  return photo.data || "";
-}
-
-// 降级存储放不下原图，先压到最长边 1280 的 JPEG
-function blobToDataUrl(blob, compress) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (!compress) {
-        resolve(reader.result);
-        return;
-      }
-      const image = new Image();
-      image.onload = () => {
-        const limit = 1280;
-        const scale = Math.min(1, limit / Math.max(image.width, image.height));
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(image.width * scale));
-        canvas.height = Math.max(1, Math.round(image.height * scale));
-        const context = canvas.getContext("2d");
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        try {
-          resolve(canvas.toDataURL("image/jpeg", 0.78));
-        } catch (error) {
-          resolve(reader.result);
-        }
-      };
-      image.onerror = () => resolve(reader.result);
-      image.src = reader.result;
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(blob);
-  });
-}
-
-async function albumAll() {
-  const backend = await ensureAlbumBackend();
-  if (backend === "cloud") return cloudList();
-  if (backend === "server") {
-    const response = await fetch(ALBUM_API, { cache: "no-store" });
-    const payload = await response.json();
-    if (payload && payload.lan) albumLanUrl = String(payload.lan).replace(/index\.html$/, "");
-    return Array.isArray(payload && payload.photos) ? payload.photos : [];
-  }
-  if (backend === "idb") {
-    const db = await openAlbumDb();
-    return new Promise((resolve, reject) => {
-      const request = db.transaction(ALBUM_STORE, "readonly").objectStore(ALBUM_STORE).getAll();
-      request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
-    });
-  }
-  if (backend === "local") return readLocalAlbum();
-  return albumMemory.slice();
-}
-
-async function albumPut(record) {
-  const backend = await ensureAlbumBackend();
-  if (backend === "cloud") {
-    return cloudUploadToLibrary(record);
-  }
-  if (backend === "server") {
-    return albumUploadToServer(record);
-  }
-  if (backend === "idb") {
-    const db = await openAlbumDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(ALBUM_STORE, "readwrite");
-      tx.objectStore(ALBUM_STORE).put(record);
-      tx.oncomplete = () => resolve(record);
-      tx.onerror = () => reject(tx.error);
-    });
-  }
-
-  const data = await blobToDataUrl(record.blob, backend === "local");
-  const slim = {
-    id: record.id,
-    name: record.name,
-    createdAt: record.createdAt,
-    type: record.type,
-    size: record.size,
-    data
-  };
-  if (backend === "local") {
-    const list = readLocalAlbum();
-    list.push(slim);
-    writeLocalAlbum(list);
-  } else {
-    albumMemory.push(slim);
-  }
-  return slim;
-}
-
-async function albumRemove(id) {
-  const backend = await ensureAlbumBackend();
-  if (backend === "cloud") {
-    return cloudRemoveById(id);
-  }
-  if (backend === "server") {
-    const response = await fetch(ALBUM_API + "/" + encodeURIComponent(id), { method: "DELETE" });
-    if (!response.ok) throw new Error("删除失败");
-    return;
-  }
-  if (backend === "idb") {
-    const db = await openAlbumDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(ALBUM_STORE, "readwrite");
-      tx.objectStore(ALBUM_STORE).delete(id);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
-  }
-  if (backend === "local") {
-    writeLocalAlbum(readLocalAlbum().filter((photo) => photo.id !== id));
-  } else {
-    albumMemory = albumMemory.filter((photo) => photo.id !== id);
-  }
-}
 
 function readAlbumPass() {
   try {
@@ -773,35 +240,17 @@ function readAlbumPass() {
   }
 }
 
-function writeAlbumPass(value) {
-  try {
-    localStorage.setItem(ALBUM_PASS_KEY, value);
-  } catch (error) {
-    // 存储被禁用时只在内存里生效
-  }
-}
-
-async function updatePhotoStorageHint() {
-  if (!elements.photoStorage) return;
-  const backend = await ensureAlbumBackend();
-  if (backend === "cloud") {
-    elements.photoStorage.textContent = "照片存在云端图库，任何设备打开这个页面都能搜到同一批照片。";
-    elements.photoStorage.dataset.mode = "cloud";
-  } else if (backend === "server") {
-    elements.photoStorage.textContent = albumLanUrl
-      ? "照片存在这台电脑的 photo-library 里。手机连同一个 Wi-Fi，用 " + albumLanUrl + " 打开，看到的是同一批照片。"
-      : "照片存在这台电脑的 photo-library 里，换设备带上整个文件夹就能搜到。";
-    elements.photoStorage.dataset.mode = "server";
-  } else if (backend === "idb") {
-    elements.photoStorage.textContent = "图库服务没开，照片暂存在这台设备的浏览器数据库里。";
-    elements.photoStorage.dataset.mode = "idb";
-  } else if (backend === "local") {
-    elements.photoStorage.textContent = "本地数据库不可用，照片改存浏览器缓存（会自动压缩）。";
-    elements.photoStorage.dataset.mode = "local";
-  } else {
-    elements.photoStorage.textContent = "当前环境不允许本地存储，照片只在这次打开期间有效。";
-    elements.photoStorage.dataset.mode = "memory";
-  }
+// 相册内容来自 album-data.js；没加载到就当空相册
+function albumAll() {
+  const source = Array.isArray(window.STAR_ISLE_ALBUM) ? window.STAR_ISLE_ALBUM : [];
+  return Promise.resolve(
+    source.map((photo, index) => ({
+      id: "book-" + index,
+      name: String(photo.name || "").trim(),
+      createdAt: photo.date ? Date.parse(photo.date) : Date.now(),
+      url: photo.src || ""
+    }))
+  );
 }
 
 function setAlbumMessage(node, text, tone) {
@@ -811,36 +260,19 @@ function setAlbumMessage(node, text, tone) {
   node.classList.toggle("is-ok", tone === "ok");
 }
 
-function releaseListUrls() {
-  albumListUrls.forEach((url) => URL.revokeObjectURL(url));
-  albumListUrls = [];
-}
-
-function listUrlFor(photo) {
-  const url = photoSourceFor(photo);
-  if (url.indexOf("blob:") === 0) albumListUrls.push(url);
-  return url;
-}
-
-function resultUrlFor(photo) {
-  if (albumResultUrl && albumResultUrl.indexOf("blob:") === 0) URL.revokeObjectURL(albumResultUrl);
-  albumResultUrl = photoSourceFor(photo);
-  return albumResultUrl;
-}
-
 function hidePhotoResult() {
   if (!elements.photoResult) return;
   elements.photoResult.hidden = true;
   elements.photoResultImage.removeAttribute("src");
-  if (albumResultUrl && albumResultUrl.indexOf("blob:") === 0) URL.revokeObjectURL(albumResultUrl);
-  albumResultUrl = null;
 }
 
 function showPhotoResult(photo) {
-  elements.photoResultImage.src = resultUrlFor(photo);
+  elements.photoResultImage.src = photo.url;
   elements.photoResultImage.alt = photo.name;
   elements.photoResultName.textContent = photo.name;
-  elements.photoResultDate.textContent = new Date(photo.createdAt).toLocaleDateString("zh-CN");
+  elements.photoResultDate.textContent = photo.createdAt
+    ? new Date(photo.createdAt).toLocaleDateString("zh-CN")
+    : "";
   elements.photoResult.hidden = false;
 }
 
@@ -853,52 +285,29 @@ async function runPhotoSearch(event) {
     setAlbumMessage(elements.photoMessage, "先输入照片名字。", "error");
     return;
   }
-  try {
-    const photos = await albumAll();
-    const match = photos.find((photo) => photo.name.trim().toLowerCase() === keyword.toLowerCase());
-    if (!match) {
-      hidePhotoResult();
-      setAlbumMessage(elements.photoMessage, "没有叫「" + keyword + "」的照片。", "error");
-      return;
-    }
-    showPhotoResult(match);
-    setAlbumMessage(elements.photoMessage, "", "");
-  } catch (error) {
+  const photos = await albumAll();
+  const match = photos.find((photo) => photo.name.toLowerCase() === keyword.toLowerCase());
+  if (!match) {
     hidePhotoResult();
-    setAlbumMessage(elements.photoMessage, "相册读取失败，换个浏览器或关闭无痕模式再试。", "error");
+    setAlbumMessage(elements.photoMessage, "没有叫「" + keyword + "」的照片。", "error");
+    return;
   }
+  showPhotoResult(match);
+  setAlbumMessage(elements.photoMessage, "", "");
 }
 
-/* ---------- 管理员照片墙：嵌在相册面板里的全部照片 ---------- */
-
-function releaseWallUrls() {
-  albumWallUrls.forEach((url) => URL.revokeObjectURL(url));
-  albumWallUrls = [];
-}
-
-function wallUrlFor(photo) {
-  const url = photoSourceFor(photo);
-  if (url.indexOf("blob:") === 0) albumWallUrls.push(url);
-  return url;
-}
+/* 照片墙：只有输对管理员密码才铺开 */
 
 async function renderPhotoWall() {
   const grid = elements.photoGrid;
   if (!grid) return;
-  releaseWallUrls();
   grid.innerHTML = "";
 
-  let photos = [];
-  try {
-    photos = await albumAll();
-  } catch (error) {
-    grid.innerHTML = '<p class="photo-grid-empty">相册读取失败。</p>';
-    return;
-  }
+  const photos = await albumAll();
   photos.sort((a, b) => b.createdAt - a.createdAt);
   elements.photoWallCount.textContent = photos.length ? "共 " + photos.length + " 张" : "还没有照片";
   if (!photos.length) {
-    grid.innerHTML = '<p class="photo-grid-empty">还没有照片。上传一张，并给它起个名字。</p>';
+    grid.innerHTML = '<p class="photo-grid-empty">还没有照片。</p>';
     return;
   }
 
@@ -909,7 +318,7 @@ async function renderPhotoWall() {
     button.title = photo.name;
 
     const image = document.createElement("img");
-    image.src = wallUrlFor(photo);
+    image.src = photo.url;
     image.alt = photo.name;
     image.loading = "lazy";
     button.appendChild(image);
@@ -934,151 +343,14 @@ function setPhotoWallVisible(visible) {
   if (!elements.photoWall) return;
   elements.photoWall.hidden = !visible;
   elements.photoWallToggle.classList.toggle("is-active", visible);
-  if (visible) {
-    renderPhotoWall();
-  } else {
-    releaseWallUrls();
-  }
+  if (visible) renderPhotoWall();
 }
 
-function hidePhotoAdminBody() {
-  elements.photoGate.hidden = false;
-  elements.photoAdminBody.hidden = true;
-}
-
-async function showPhotoAdminBody() {
-  elements.photoGate.hidden = true;
-  elements.photoAdminBody.hidden = false;
-  await renderAlbumList();
-}
-
-function openPhotoAdmin() {
+function openAlbumGate() {
   setAlbumMessage(elements.photoGateMessage, "");
-  setAlbumMessage(elements.photoUploadMessage, "");
-  setAlbumMessage(elements.photoPassMessage, "");
   elements.photoPassInput.value = "";
   if (!elements.photoAdminDialog.open) elements.photoAdminDialog.showModal();
-  updatePhotoStorageHint();
-  if (albumUnlocked) {
-    showPhotoAdminBody();
-  } else {
-    hidePhotoAdminBody();
-    window.setTimeout(() => elements.photoPassInput.focus(), 80);
-  }
-}
-
-async function renderAlbumList() {
-  const list = elements.photoList;
-  if (!list) return;
-  releaseListUrls();
-  list.innerHTML = "";
-  let photos = [];
-  try {
-    photos = await albumAll();
-  } catch (error) {
-    list.innerHTML = '<p class="photo-empty">相册读取失败。</p>';
-    return;
-  }
-  photos.sort((a, b) => b.createdAt - a.createdAt);
-  updatePhotoStorageHint();
-  if (!photos.length) {
-    list.innerHTML = '<p class="photo-empty">还没有照片。上传一张，并给它起个名字。</p>';
-    return;
-  }
-  photos.forEach((photo) => {
-    const item = document.createElement("div");
-    item.className = "photo-item";
-
-    const image = document.createElement("img");
-    image.src = listUrlFor(photo);
-    image.alt = photo.name;
-    item.appendChild(image);
-
-    const copy = document.createElement("div");
-    copy.className = "photo-item-copy";
-    const name = document.createElement("strong");
-    name.textContent = photo.name;
-    const meta = document.createElement("span");
-    meta.textContent = new Date(photo.createdAt).toLocaleString("zh-CN");
-    copy.appendChild(name);
-    copy.appendChild(meta);
-    item.appendChild(copy);
-
-    const remove = document.createElement("button");
-    remove.type = "button";
-    remove.className = "photo-item-remove";
-    remove.textContent = "删除";
-    remove.addEventListener("click", async () => {
-      if (!window.confirm("删除「" + photo.name + "」？删除后无法恢复。")) return;
-      try {
-        await albumRemove(photo.id);
-        await renderAlbumList();
-        if (elements.photoWall && !elements.photoWall.hidden) renderPhotoWall();
-        if (elements.photoResultName.textContent === photo.name) hidePhotoResult();
-        setAlbumMessage(elements.photoUploadMessage, "已删除「" + photo.name + "」。", "ok");
-      } catch (error) {
-        setAlbumMessage(elements.photoUploadMessage, "删除失败，请重试。", "error");
-      }
-    });
-    item.appendChild(remove);
-
-    list.appendChild(item);
-  });
-}
-
-async function submitPhotoUpload(event) {
-  event.preventDefault();
-  const name = elements.photoNameInput.value.trim();
-  const file = elements.photoFileInput.files[0];
-  if (!name) {
-    setAlbumMessage(elements.photoUploadMessage, "先给这张照片起个名字。", "error");
-    return;
-  }
-  if (!file) {
-    setAlbumMessage(elements.photoUploadMessage, "选一张图片。", "error");
-    return;
-  }
-  if (!file.type.startsWith("image/")) {
-    setAlbumMessage(elements.photoUploadMessage, "这个文件不是图片。", "error");
-    return;
-  }
-  if (file.size > ALBUM_MAX_SIZE) {
-    setAlbumMessage(elements.photoUploadMessage, "图片超过 12MB，换一张小一点的。", "error");
-    return;
-  }
-  try {
-    const existing = await albumAll();
-    if (existing.some((photo) => photo.name.trim().toLowerCase() === name.toLowerCase())) {
-      setAlbumMessage(elements.photoUploadMessage, "已经有同名的照片，换个名字或者先删掉旧的。", "error");
-      return;
-    }
-    await albumPut({
-      id: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
-      name,
-      createdAt: Date.now(),
-      type: file.type,
-      size: file.size,
-      blob: file
-    });
-    elements.photoNameInput.value = "";
-    elements.photoFileInput.value = "";
-    setAlbumMessage(elements.photoUploadMessage, "已保存「" + name + "」。", "ok");
-    await renderAlbumList();
-    if (elements.photoWall && !elements.photoWall.hidden) renderPhotoWall();
-  } catch (error) {
-    const quota = error && (error.name === "QuotaExceededError" || String(error.message).indexOf("quota") >= 0);
-    if (error && error.friendly) {
-      setAlbumMessage(elements.photoUploadMessage, error.message, "error");
-      return;
-    }
-    setAlbumMessage(
-      elements.photoUploadMessage,
-      quota
-        ? "浏览器的本地空间放不下了，删掉几张再试。"
-        : "保存失败：" + (error && error.message ? error.message : "未知原因"),
-      "error"
-    );
-  }
+  window.setTimeout(() => elements.photoPassInput.focus(), 80);
 }
 
 function submitPhotoGate(event) {
@@ -1094,44 +366,20 @@ function submitPhotoGate(event) {
     return;
   }
   albumUnlocked = true;
-  setAlbumMessage(elements.photoGateMessage, "", "");
   elements.photoPassInput.value = "";
-  showPhotoAdminBody();
-  if (albumWallPending) {
-    albumWallPending = false;
-    setPhotoWallVisible(true);
-  }
-}
-
-function submitPhotoPass(event) {
-  event.preventDefault();
-  const current = elements.photoOldPass.value.trim();
-  const next = elements.photoNewPass.value.trim();
-  if (current !== readAlbumPass()) {
-    setAlbumMessage(elements.photoPassMessage, "当前密码不对。", "error");
-    return;
-  }
-  if (next.length < 4 || next.length > 20) {
-    setAlbumMessage(elements.photoPassMessage, "新密码要 4 到 20 位。", "error");
-    return;
-  }
-  writeAlbumPass(next);
-  elements.photoOldPass.value = "";
-  elements.photoNewPass.value = "";
-  elements.photoPassForm.hidden = true;
-  setAlbumMessage(elements.photoPassMessage, "密码已更新，下次用新密码进入。", "ok");
+  setAlbumMessage(elements.photoGateMessage, "", "");
+  elements.photoAdminDialog.close();
+  setPhotoWallVisible(true);
 }
 
 function initPhotoAlbum() {
   if (!elements.photoPanel) return;
 
   elements.photoSearchForm.addEventListener("submit", runPhotoSearch);
-  elements.photoAdminEntry.addEventListener("click", openPhotoAdmin);
 
   elements.photoWallToggle.addEventListener("click", () => {
     if (!albumUnlocked) {
-      albumWallPending = true;
-      openPhotoAdmin();
+      openAlbumGate();
       return;
     }
     setPhotoWallVisible(elements.photoWall.hidden);
@@ -1139,29 +387,12 @@ function initPhotoAlbum() {
 
   elements.photoWallLock.addEventListener("click", () => setPhotoWallVisible(false));
   elements.photoGateForm.addEventListener("submit", submitPhotoGate);
-  elements.photoUploadForm.addEventListener("submit", submitPhotoUpload);
-  elements.photoPassForm.addEventListener("submit", submitPhotoPass);
-
-  elements.photoChangePassButton.addEventListener("click", () => {
-    elements.photoPassForm.hidden = !elements.photoPassForm.hidden;
-    setAlbumMessage(elements.photoPassMessage, "");
-    if (!elements.photoPassForm.hidden) elements.photoOldPass.focus();
-  });
-
-  elements.photoLockButton.addEventListener("click", () => {
-    albumUnlocked = false;
-    hidePhotoAdminBody();
-    setAlbumMessage(elements.photoGateMessage, "已退出管理。", "ok");
-  });
 
   elements.photoAdminDialog.addEventListener("close", () => {
-    albumWallPending = false;
-    releaseListUrls();
     setAlbumMessage(elements.photoGateMessage, "");
-    setAlbumMessage(elements.photoUploadMessage, "");
   });
 
-  // 切到别的设施时收起相册，避免残留上一张图
+  // 清空输入时收起上一张图
   elements.photoSearchInput.addEventListener("input", () => {
     if (!elements.photoSearchInput.value.trim()) {
       hidePhotoResult();
@@ -2445,7 +1676,6 @@ function openFacility(id) {
   elements.photoPanel.hidden = !albumFacility;
   if (albumFacility) {
     elements.photoSearchInput.value = "";
-    updatePhotoStorageHint();
     hidePhotoResult();
     setAlbumMessage(elements.photoMessage, "", "");
   }
