@@ -2,8 +2,6 @@ const LAKE = { x: -3.2, z: -16.8, rx: 6.8, rz: 4.2, tilt: -0.26 };
 const GROUND_RADIUS = 36;
 const GROUND_FAR_RADIUS = 210;
 const GROUND_BASE_Y = -0.16;
-const LAKE_DEPTH = 0.7;
-const LAKE_WATER_Y = GROUND_BASE_Y - 0.025;
 
 const STORAGE_KEY = "star-isle-park-v1";
 const CARRY_PREFIX = `${STORAGE_KEY}::`;
@@ -207,30 +205,229 @@ const elements = {
   clearMusicLibrary: document.getElementById("clearMusicLibrary"),
   toast: document.getElementById("toast"),
   photoPanel: document.getElementById("photoPanel"),
+  photoAdminEntry: document.getElementById("photoAdminEntry"),
   photoSearchForm: document.getElementById("photoSearchForm"),
   photoSearchInput: document.getElementById("photoSearchInput"),
   photoMessage: document.getElementById("photoMessage"),
+  photoStorage: document.getElementById("photoStorage"),
   photoResult: document.getElementById("photoResult"),
   photoResultImage: document.getElementById("photoResultImage"),
   photoResultName: document.getElementById("photoResultName"),
   photoResultDate: document.getElementById("photoResultDate"),
   photoAdminDialog: document.getElementById("photoAdminDialog"),
+  photoGate: document.getElementById("photoGate"),
   photoGateForm: document.getElementById("photoGateForm"),
   photoPassInput: document.getElementById("photoPassInput"),
   photoGateMessage: document.getElementById("photoGateMessage"),
-  photoWall: document.getElementById("photoWall"),
-  photoWallToggle: document.getElementById("photoWallToggle"),
-  photoGrid: document.getElementById("photoGrid"),
-  photoWallCount: document.getElementById("photoWallCount"),
-  photoWallLock: document.getElementById("photoWallLock")
+  photoAdminBody: document.getElementById("photoAdminBody"),
+  photoUploadForm: document.getElementById("photoUploadForm"),
+  photoNameInput: document.getElementById("photoNameInput"),
+  photoFileInput: document.getElementById("photoFileInput"),
+  photoUploadMessage: document.getElementById("photoUploadMessage"),
+  photoList: document.getElementById("photoList"),
+  photoPassForm: document.getElementById("photoPassForm"),
+  photoOldPass: document.getElementById("photoOldPass"),
+  photoNewPass: document.getElementById("photoNewPass"),
+  photoPassMessage: document.getElementById("photoPassMessage"),
+  photoChangePassButton: document.getElementById("photoChangePassButton"),
+  photoLockButton: document.getElementById("photoLockButton")
 };
 
-/* ---------- 旋转木马相册：照片内嵌在 album-data.js，页面不做上传 ---------- */
+/* ---------- 旋转木马相册：图片存在 IndexedDB，密码存在 localStorage ---------- */
 
+const ALBUM_DB_NAME = "star-isle-album";
+const ALBUM_STORE = "photos";
+const ALBUM_LOCAL_KEY = "star-isle-album-photos";
 const ALBUM_PASS_KEY = "star-isle-album-pass";
 const ALBUM_DEFAULT_PASS = "200701";
+const ALBUM_MAX_SIZE = 12 * 1024 * 1024;
 
+let albumDbPromise = null;
+let albumBackend = null;
+let albumMemory = [];
 let albumUnlocked = false;
+let albumListUrls = [];
+let albumResultUrl = null;
+
+// 打开 IndexedDB。被浏览器拒绝（iframe、file://、无痕等）时返回 null，交给上层降级
+function openAlbumDb() {
+  if (albumDbPromise) return albumDbPromise;
+  albumDbPromise = new Promise((resolve) => {
+    if (!window.indexedDB) {
+      resolve(null);
+      return;
+    }
+    let request;
+    try {
+      request = window.indexedDB.open(ALBUM_DB_NAME, 1);
+    } catch (error) {
+      resolve(null);
+      return;
+    }
+    // 有些环境（沙箱 iframe、无痕模式）会让 open 一直不回调，加个兜底超时
+    let settled = false;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(value);
+    };
+    timer = window.setTimeout(() => finish(null), 4000);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(ALBUM_STORE)) {
+        const store = db.createObjectStore(ALBUM_STORE, { keyPath: "id" });
+        store.createIndex("name", "name", { unique: false });
+      }
+    };
+    request.onsuccess = () => finish(request.result);
+    request.onerror = () => finish(null);
+    request.onblocked = () => finish(null);
+  });
+  return albumDbPromise;
+}
+
+function localAlbumAvailable() {
+  try {
+    const probe = "__star_isle_album_probe__";
+    window.localStorage.setItem(probe, "1");
+    window.localStorage.removeItem(probe);
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+function readLocalAlbum() {
+  try {
+    const raw = window.localStorage.getItem(ALBUM_LOCAL_KEY);
+    if (!raw) return [];
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function writeLocalAlbum(list) {
+  window.localStorage.setItem(ALBUM_LOCAL_KEY, JSON.stringify(list));
+}
+
+// 三种后端：IndexedDB → 浏览器缓存 → 只在内存里
+async function ensureAlbumBackend() {
+  if (albumBackend) return albumBackend;
+  const db = await openAlbumDb();
+  if (db) {
+    albumBackend = "idb";
+  } else if (localAlbumAvailable()) {
+    albumBackend = "local";
+  } else {
+    albumBackend = "memory";
+  }
+  return albumBackend;
+}
+
+function photoSourceFor(photo) {
+  if (photo.blob) return URL.createObjectURL(photo.blob);
+  return photo.data || "";
+}
+
+// 降级存储放不下原图，先压到最长边 1280 的 JPEG
+function blobToDataUrl(blob, compress) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (!compress) {
+        resolve(reader.result);
+        return;
+      }
+      const image = new Image();
+      image.onload = () => {
+        const limit = 1280;
+        const scale = Math.min(1, limit / Math.max(image.width, image.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext("2d");
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        try {
+          resolve(canvas.toDataURL("image/jpeg", 0.78));
+        } catch (error) {
+          resolve(reader.result);
+        }
+      };
+      image.onerror = () => resolve(reader.result);
+      image.src = reader.result;
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function albumAll() {
+  const backend = await ensureAlbumBackend();
+  if (backend === "idb") {
+    const db = await openAlbumDb();
+    return new Promise((resolve, reject) => {
+      const request = db.transaction(ALBUM_STORE, "readonly").objectStore(ALBUM_STORE).getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => reject(request.error);
+    });
+  }
+  if (backend === "local") return readLocalAlbum();
+  return albumMemory.slice();
+}
+
+async function albumPut(record) {
+  const backend = await ensureAlbumBackend();
+  if (backend === "idb") {
+    const db = await openAlbumDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(ALBUM_STORE, "readwrite");
+      tx.objectStore(ALBUM_STORE).put(record);
+      tx.oncomplete = () => resolve(record);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  const data = await blobToDataUrl(record.blob, backend === "local");
+  const slim = {
+    id: record.id,
+    name: record.name,
+    createdAt: record.createdAt,
+    type: record.type,
+    size: record.size,
+    data
+  };
+  if (backend === "local") {
+    const list = readLocalAlbum();
+    list.push(slim);
+    writeLocalAlbum(list);
+  } else {
+    albumMemory.push(slim);
+  }
+  return slim;
+}
+
+async function albumRemove(id) {
+  const backend = await ensureAlbumBackend();
+  if (backend === "idb") {
+    const db = await openAlbumDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(ALBUM_STORE, "readwrite");
+      tx.objectStore(ALBUM_STORE).delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+  if (backend === "local") {
+    writeLocalAlbum(readLocalAlbum().filter((photo) => photo.id !== id));
+  } else {
+    albumMemory = albumMemory.filter((photo) => photo.id !== id);
+  }
+}
 
 function readAlbumPass() {
   try {
@@ -240,17 +437,27 @@ function readAlbumPass() {
   }
 }
 
-// 相册内容来自 album-data.js；没加载到就当空相册
-function albumAll() {
-  const source = Array.isArray(window.STAR_ISLE_ALBUM) ? window.STAR_ISLE_ALBUM : [];
-  return Promise.resolve(
-    source.map((photo, index) => ({
-      id: "book-" + index,
-      name: String(photo.name || "").trim(),
-      createdAt: photo.date ? Date.parse(photo.date) : Date.now(),
-      url: photo.src || ""
-    }))
-  );
+function writeAlbumPass(value) {
+  try {
+    localStorage.setItem(ALBUM_PASS_KEY, value);
+  } catch (error) {
+    // 存储被禁用时只在内存里生效
+  }
+}
+
+async function updatePhotoStorageHint() {
+  if (!elements.photoStorage) return;
+  const backend = await ensureAlbumBackend();
+  if (backend === "idb") {
+    elements.photoStorage.textContent = "照片保存在这台设备的浏览器数据库里。";
+    elements.photoStorage.dataset.mode = "idb";
+  } else if (backend === "local") {
+    elements.photoStorage.textContent = "本地数据库不可用，照片改存浏览器缓存（会自动压缩）。";
+    elements.photoStorage.dataset.mode = "local";
+  } else {
+    elements.photoStorage.textContent = "当前环境不允许本地存储，照片只在这次打开期间有效。";
+    elements.photoStorage.dataset.mode = "memory";
+  }
 }
 
 function setAlbumMessage(node, text, tone) {
@@ -260,19 +467,36 @@ function setAlbumMessage(node, text, tone) {
   node.classList.toggle("is-ok", tone === "ok");
 }
 
+function releaseListUrls() {
+  albumListUrls.forEach((url) => URL.revokeObjectURL(url));
+  albumListUrls = [];
+}
+
+function listUrlFor(photo) {
+  const url = photoSourceFor(photo);
+  if (url.indexOf("blob:") === 0) albumListUrls.push(url);
+  return url;
+}
+
+function resultUrlFor(photo) {
+  if (albumResultUrl && albumResultUrl.indexOf("blob:") === 0) URL.revokeObjectURL(albumResultUrl);
+  albumResultUrl = photoSourceFor(photo);
+  return albumResultUrl;
+}
+
 function hidePhotoResult() {
   if (!elements.photoResult) return;
   elements.photoResult.hidden = true;
   elements.photoResultImage.removeAttribute("src");
+  if (albumResultUrl && albumResultUrl.indexOf("blob:") === 0) URL.revokeObjectURL(albumResultUrl);
+  albumResultUrl = null;
 }
 
 function showPhotoResult(photo) {
-  elements.photoResultImage.src = photo.url;
+  elements.photoResultImage.src = resultUrlFor(photo);
   elements.photoResultImage.alt = photo.name;
   elements.photoResultName.textContent = photo.name;
-  elements.photoResultDate.textContent = photo.createdAt
-    ? new Date(photo.createdAt).toLocaleDateString("zh-CN")
-    : "";
+  elements.photoResultDate.textContent = new Date(photo.createdAt).toLocaleDateString("zh-CN");
   elements.photoResult.hidden = false;
 }
 
@@ -285,72 +509,154 @@ async function runPhotoSearch(event) {
     setAlbumMessage(elements.photoMessage, "先输入照片名字。", "error");
     return;
   }
-  const photos = await albumAll();
-  const match = photos.find((photo) => photo.name.toLowerCase() === keyword.toLowerCase());
-  if (!match) {
+  try {
+    const photos = await albumAll();
+    const match = photos.find((photo) => photo.name.trim().toLowerCase() === keyword.toLowerCase());
+    if (!match) {
+      hidePhotoResult();
+      setAlbumMessage(elements.photoMessage, "没有叫「" + keyword + "」的照片。", "error");
+      return;
+    }
+    showPhotoResult(match);
+    setAlbumMessage(elements.photoMessage, "", "");
+  } catch (error) {
     hidePhotoResult();
-    setAlbumMessage(elements.photoMessage, "没有叫「" + keyword + "」的照片。", "error");
-    return;
+    setAlbumMessage(elements.photoMessage, "相册读取失败，换个浏览器或关闭无痕模式再试。", "error");
   }
-  showPhotoResult(match);
-  setAlbumMessage(elements.photoMessage, "", "");
 }
 
-/* 照片墙：只有输对管理员密码才铺开 */
+function hidePhotoAdminBody() {
+  elements.photoGate.hidden = false;
+  elements.photoAdminBody.hidden = true;
+}
 
-async function renderPhotoWall() {
-  const grid = elements.photoGrid;
-  if (!grid) return;
-  grid.innerHTML = "";
+async function showPhotoAdminBody() {
+  elements.photoGate.hidden = true;
+  elements.photoAdminBody.hidden = false;
+  await renderAlbumList();
+}
 
-  const photos = await albumAll();
-  photos.sort((a, b) => b.createdAt - a.createdAt);
-  elements.photoWallCount.textContent = photos.length ? "共 " + photos.length + " 张" : "还没有照片";
-  if (!photos.length) {
-    grid.innerHTML = '<p class="photo-grid-empty">还没有照片。</p>';
+function openPhotoAdmin() {
+  setAlbumMessage(elements.photoGateMessage, "");
+  setAlbumMessage(elements.photoUploadMessage, "");
+  setAlbumMessage(elements.photoPassMessage, "");
+  elements.photoPassInput.value = "";
+  if (!elements.photoAdminDialog.open) elements.photoAdminDialog.showModal();
+  updatePhotoStorageHint();
+  if (albumUnlocked) {
+    showPhotoAdminBody();
+  } else {
+    hidePhotoAdminBody();
+    window.setTimeout(() => elements.photoPassInput.focus(), 80);
+  }
+}
+
+async function renderAlbumList() {
+  const list = elements.photoList;
+  if (!list) return;
+  releaseListUrls();
+  list.innerHTML = "";
+  let photos = [];
+  try {
+    photos = await albumAll();
+  } catch (error) {
+    list.innerHTML = '<p class="photo-empty">相册读取失败。</p>';
     return;
   }
-
+  photos.sort((a, b) => b.createdAt - a.createdAt);
+  updatePhotoStorageHint();
+  if (!photos.length) {
+    list.innerHTML = '<p class="photo-empty">还没有照片。上传一张，并给它起个名字。</p>';
+    return;
+  }
   photos.forEach((photo) => {
-    const figure = document.createElement("figure");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.title = photo.name;
+    const item = document.createElement("div");
+    item.className = "photo-item";
 
     const image = document.createElement("img");
-    image.src = photo.url;
+    image.src = listUrlFor(photo);
     image.alt = photo.name;
-    image.loading = "lazy";
-    button.appendChild(image);
+    item.appendChild(image);
 
-    button.addEventListener("click", () => {
-      showPhotoResult(photo);
-      if (elements.photoResult && elements.photoResult.scrollIntoView) {
-        elements.photoResult.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    const copy = document.createElement("div");
+    copy.className = "photo-item-copy";
+    const name = document.createElement("strong");
+    name.textContent = photo.name;
+    const meta = document.createElement("span");
+    meta.textContent = new Date(photo.createdAt).toLocaleString("zh-CN");
+    copy.appendChild(name);
+    copy.appendChild(meta);
+    item.appendChild(copy);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "photo-item-remove";
+    remove.textContent = "删除";
+    remove.addEventListener("click", async () => {
+      if (!window.confirm("删除「" + photo.name + "」？删除后无法恢复。")) return;
+      try {
+        await albumRemove(photo.id);
+        await renderAlbumList();
+        if (elements.photoResultName.textContent === photo.name) hidePhotoResult();
+        setAlbumMessage(elements.photoUploadMessage, "已删除「" + photo.name + "」。", "ok");
+      } catch (error) {
+        setAlbumMessage(elements.photoUploadMessage, "删除失败，请重试。", "error");
       }
     });
+    item.appendChild(remove);
 
-    const caption = document.createElement("figcaption");
-    caption.textContent = photo.name;
-
-    figure.appendChild(button);
-    figure.appendChild(caption);
-    grid.appendChild(figure);
+    list.appendChild(item);
   });
 }
 
-function setPhotoWallVisible(visible) {
-  if (!elements.photoWall) return;
-  elements.photoWall.hidden = !visible;
-  elements.photoWallToggle.classList.toggle("is-active", visible);
-  if (visible) renderPhotoWall();
-}
-
-function openAlbumGate() {
-  setAlbumMessage(elements.photoGateMessage, "");
-  elements.photoPassInput.value = "";
-  if (!elements.photoAdminDialog.open) elements.photoAdminDialog.showModal();
-  window.setTimeout(() => elements.photoPassInput.focus(), 80);
+async function submitPhotoUpload(event) {
+  event.preventDefault();
+  const name = elements.photoNameInput.value.trim();
+  const file = elements.photoFileInput.files[0];
+  if (!name) {
+    setAlbumMessage(elements.photoUploadMessage, "先给这张照片起个名字。", "error");
+    return;
+  }
+  if (!file) {
+    setAlbumMessage(elements.photoUploadMessage, "选一张图片。", "error");
+    return;
+  }
+  if (!file.type.startsWith("image/")) {
+    setAlbumMessage(elements.photoUploadMessage, "这个文件不是图片。", "error");
+    return;
+  }
+  if (file.size > ALBUM_MAX_SIZE) {
+    setAlbumMessage(elements.photoUploadMessage, "图片超过 12MB，换一张小一点的。", "error");
+    return;
+  }
+  try {
+    const existing = await albumAll();
+    if (existing.some((photo) => photo.name.trim().toLowerCase() === name.toLowerCase())) {
+      setAlbumMessage(elements.photoUploadMessage, "已经有同名的照片，换个名字或者先删掉旧的。", "error");
+      return;
+    }
+    await albumPut({
+      id: (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2),
+      name,
+      createdAt: Date.now(),
+      type: file.type,
+      size: file.size,
+      blob: file
+    });
+    elements.photoNameInput.value = "";
+    elements.photoFileInput.value = "";
+    setAlbumMessage(elements.photoUploadMessage, "已保存「" + name + "」。", "ok");
+    await renderAlbumList();
+  } catch (error) {
+    const quota = error && (error.name === "QuotaExceededError" || String(error.message).indexOf("quota") >= 0);
+    setAlbumMessage(
+      elements.photoUploadMessage,
+      quota
+        ? "浏览器的本地空间放不下了，删掉几张再试。"
+        : "保存失败：" + (error && error.message ? error.message : "未知原因"),
+      "error"
+    );
+  }
 }
 
 function submitPhotoGate(event) {
@@ -366,33 +672,58 @@ function submitPhotoGate(event) {
     return;
   }
   albumUnlocked = true;
-  elements.photoPassInput.value = "";
   setAlbumMessage(elements.photoGateMessage, "", "");
-  elements.photoAdminDialog.close();
-  setPhotoWallVisible(true);
+  elements.photoPassInput.value = "";
+  showPhotoAdminBody();
+}
+
+function submitPhotoPass(event) {
+  event.preventDefault();
+  const current = elements.photoOldPass.value.trim();
+  const next = elements.photoNewPass.value.trim();
+  if (current !== readAlbumPass()) {
+    setAlbumMessage(elements.photoPassMessage, "当前密码不对。", "error");
+    return;
+  }
+  if (next.length < 4 || next.length > 20) {
+    setAlbumMessage(elements.photoPassMessage, "新密码要 4 到 20 位。", "error");
+    return;
+  }
+  writeAlbumPass(next);
+  elements.photoOldPass.value = "";
+  elements.photoNewPass.value = "";
+  elements.photoPassForm.hidden = true;
+  setAlbumMessage(elements.photoPassMessage, "密码已更新，下次用新密码进入。", "ok");
 }
 
 function initPhotoAlbum() {
   if (!elements.photoPanel) return;
 
   elements.photoSearchForm.addEventListener("submit", runPhotoSearch);
+  elements.photoAdminEntry.addEventListener("click", openPhotoAdmin);
+  elements.photoGateForm.addEventListener("submit", submitPhotoGate);
+  elements.photoUploadForm.addEventListener("submit", submitPhotoUpload);
+  elements.photoPassForm.addEventListener("submit", submitPhotoPass);
 
-  elements.photoWallToggle.addEventListener("click", () => {
-    if (!albumUnlocked) {
-      openAlbumGate();
-      return;
-    }
-    setPhotoWallVisible(elements.photoWall.hidden);
+  elements.photoChangePassButton.addEventListener("click", () => {
+    elements.photoPassForm.hidden = !elements.photoPassForm.hidden;
+    setAlbumMessage(elements.photoPassMessage, "");
+    if (!elements.photoPassForm.hidden) elements.photoOldPass.focus();
   });
 
-  elements.photoWallLock.addEventListener("click", () => setPhotoWallVisible(false));
-  elements.photoGateForm.addEventListener("submit", submitPhotoGate);
+  elements.photoLockButton.addEventListener("click", () => {
+    albumUnlocked = false;
+    hidePhotoAdminBody();
+    setAlbumMessage(elements.photoGateMessage, "已退出管理。", "ok");
+  });
 
   elements.photoAdminDialog.addEventListener("close", () => {
+    releaseListUrls();
     setAlbumMessage(elements.photoGateMessage, "");
+    setAlbumMessage(elements.photoUploadMessage, "");
   });
 
-  // 清空输入时收起上一张图
+  // 切到别的设施时收起相册，避免残留上一张图
   elements.photoSearchInput.addEventListener("input", () => {
     if (!elements.photoSearchInput.value.trim()) {
       hidePhotoResult();
@@ -1676,6 +2007,7 @@ function openFacility(id) {
   elements.photoPanel.hidden = !albumFacility;
   if (albumFacility) {
     elements.photoSearchInput.value = "";
+    updatePhotoStorageHint();
     hidePhotoResult();
     setAlbumMessage(elements.photoMessage, "", "");
   }
@@ -1874,15 +2206,6 @@ function applySkyPeriod(isDay) {
       material.metalness = wet ? 0.12 : 0.02;
       material.color.setHex(wet ? 0xb9a68d : 0xffe0b8);
     });
-
-    const lakeWater = world.scene.userData.lakeWater;
-    if (lakeWater) {
-      const rainy = kind === "rain" || kind === "storm";
-      lakeWater.uDeep.value.setHex(isDay ? (overcast ? 0x0c2429 : 0x0e2c31) : 0x03100e);
-      lakeWater.uShallow.value.setHex(isDay ? (overcast ? 0x17342c : 0x174130) : 0x061c16);
-      lakeWater.uSky.value.setHex(isDay ? (overcast ? 0x9fb3c2 : 0xb2d3ea) : 0x2f4266);
-      lakeWater.uChop.value = rainy ? 2.1 : 1;
-    }
 
     if (world.rain) {
       const rainy = kind === "rain" || kind === "storm";
@@ -2744,28 +3067,11 @@ function groundNoise(x, y) {
   return top * (1 - v) + bottom * v - 0.5;
 }
 
-// 湖盆：真正的下凹地形。岸线按角度轻轻推一下，避免标准椭圆的塑料感
-function lakeBasinAt(x, z) {
-  const deltaX = x - LAKE.x;
-  const deltaZ = z - LAKE.z;
-  const cos = Math.cos(LAKE.tilt);
-  const sin = Math.sin(LAKE.tilt);
-  const localX = deltaX * cos - deltaZ * sin;
-  const localZ = deltaX * sin + deltaZ * cos;
-  const distance = Math.hypot(localX / LAKE.rx, localZ / LAKE.rz);
-  if (distance >= 1.03) return 0;
-  const angle = Math.atan2(localZ / LAKE.rz, localX / LAKE.rx);
-  const wobble = 1 + Math.sin(angle * 3 + 0.7) * 0.034 + Math.sin(angle * 5 - 1.1) * 0.021;
-  const t = Math.max(0, 1 - distance / wobble);
-  return -LAKE_DEPTH * Math.pow(t, 0.62);
-}
-
 // 地形高度：中心保持平整，外圈缓缓抬起成丘陵；设施与湖面处压平
 function groundHeightAt(x, z) {
   const radius = Math.hypot(x, z);
   const rim = groundSmoothstep(23, 34, radius);
-  const basin = lakeBasinAt(x, z);
-  if (rim <= 0) return GROUND_BASE_Y + basin;
+  if (rim <= 0) return GROUND_BASE_Y;
 
   let height =
     (groundNoise(x * 0.045, z * 0.045) + groundNoise(x * 0.11 + 4, z * 0.11 - 2) * 0.5) *
@@ -2782,7 +3088,7 @@ function groundHeightAt(x, z) {
     height *= groundSmoothstep(zone.r, zone.r + zone.soft, distance);
   }
 
-  return GROUND_BASE_Y + height + basin;
+  return GROUND_BASE_Y + height;
 }
 
 // 程序化草地贴图：大块色斑 + 细颗粒，四向平铺无缝
@@ -2883,7 +3189,7 @@ function buildGroundMesh(innerRadius, outerRadius, radialSegments, heightBias) {
 }
 
 function addGround(scene) {
-  const ground = buildGroundMesh(0.001, GROUND_RADIUS, 150, 0);
+  const ground = buildGroundMesh(0.001, GROUND_RADIUS, 76, 0);
   ground.receiveShadow = true;
   scene.add(ground);
 
@@ -3024,146 +3330,52 @@ function addPlaza(scene) {
   scene.add(forecourtCurb);
 }
 
-// 贴着地形做的湖床：跟湖盆凹陷严丝合缝，岸边自然形成一圈湿泥
-function buildLakeBowl(innerRadius, outerRadius, segments, rings, lift) {
-  const geometry = new THREE.RingGeometry(innerRadius, outerRadius, segments, rings);
-  geometry.rotateX(-Math.PI / 2);
-  const position = geometry.attributes.position;
-  const cos = Math.cos(LAKE.tilt);
-  const sin = Math.sin(LAKE.tilt);
-  for (let index = 0; index < position.count; index += 1) {
-    const localX = position.getX(index) * LAKE.rx;
-    const localZ = position.getZ(index) * LAKE.rz;
-    const worldX = LAKE.x + localX * cos + localZ * sin;
-    const worldZ = LAKE.z - localX * sin + localZ * cos;
-    position.setX(index, localX);
-    position.setZ(index, localZ);
-    position.setY(index, groundHeightAt(worldX, worldZ) + lift);
-  }
-  geometry.computeVertexNormals();
-  return geometry;
-}
-
 function addLake(scene) {
   const group = new THREE.Group();
   group.position.set(LAKE.x, 0, LAKE.z);
   group.rotation.y = LAKE.tilt;
   scene.add(group);
 
-  // 湖床：铺满整个湖盆并爬到岸边，水下的草皮全部盖成淤泥
-  const bed = new THREE.Mesh(
-    buildLakeBowl(0.001, 1.06, 128, 20, 0.022),
-    standardMaterial(0x161a12, 0.02, 0.99)
+  // 岸坡：比水面宽一圈的湿土带
+  const bank = new THREE.Mesh(
+    new THREE.RingGeometry(0.97, 1.09, 80),
+    standardMaterial(0x1b241a, 0.06, 0.95)
   );
-  bed.receiveShadow = true;
-  group.add(bed);
+  bank.rotation.x = -Math.PI / 2;
+  bank.scale.set(LAKE.rx, LAKE.rz, 1);
+  bank.position.y = -0.15;
+  bank.receiveShadow = true;
+  group.add(bank);
 
-  // 水面：涟漪、菲涅尔天光、深浅过渡全部在着色器里算，不再是一块纯色圆片
-  const lakeUniforms = {
-    uTime: { value: 0 },
-    uChop: { value: 1 },
-    uDeep: { value: new THREE.Color(0x03100e) },
-    uShallow: { value: new THREE.Color(0x061c16) },
-    uSky: { value: new THREE.Color(0x33496e) },
-    uCenter: { value: new THREE.Vector2(LAKE.x, LAKE.z) },
-    uRadius: { value: new THREE.Vector2(LAKE.rx, LAKE.rz) },
-    uTilt: { value: LAKE.tilt }
-  };
-  scene.userData.lakeWater = lakeUniforms;
-
-  const waterMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0x0b2429,
-    metalness: 0,
-    roughness: 0.28,
-    clearcoat: 0.2,
-    clearcoatRoughness: 0.2,
-    envMapIntensity: 0.35,
-    reflectivity: 0.22,
-    transparent: true,
-    opacity: 0.94
-  });
-
-  waterMaterial.onBeforeCompile = (shader) => {
-    Object.assign(shader.uniforms, lakeUniforms);
-    shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 vLakeWorld;")
-      .replace(
-        "#include <begin_vertex>",
-        "#include <begin_vertex>\nvLakeWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;"
-      );
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace(
-        "#include <common>",
-        `#include <common>
-uniform float uTime;
-uniform float uChop;
-uniform vec3 uDeep;
-uniform vec3 uShallow;
-uniform vec3 uSky;
-uniform vec2 uCenter;
-uniform vec2 uRadius;
-uniform float uTilt;
-varying vec3 vLakeWorld;
-
-// 几层错开的波，叠起来才不像规则条纹
-float lakeWave(vec2 p) {
-  float t = uTime;
-  vec2 dirA = normalize(vec2(0.92, 0.39));
-  vec2 dirB = normalize(vec2(-0.34, 0.94));
-  vec2 dirC = normalize(vec2(0.62, -0.78));
-  float h = sin(dot(p, dirA) * 3.1 + t * 1.05) * 0.3;
-  h += sin(dot(p, dirB) * 4.7 - t * 0.86) * 0.22;
-  h += sin(dot(p, dirC) * 6.9 + t * 1.42) * 0.12;
-  h += sin(dot(p, dirA) * 9.3 - t * 1.9) * 0.06;
-  h += sin(dot(p, dirB) * 13.1 + t * 2.4) * 0.03;
-  return h * uChop;
-}
-
-vec2 lakeLocal(vec2 worldPos) {
-  vec2 delta = worldPos - uCenter;
-  float c = cos(uTilt);
-  float s = sin(uTilt);
-  return vec2(delta.x * c - delta.y * s, delta.x * s + delta.y * c) / uRadius;
-}`
-      )
-      .replace(
-        "#include <normal_fragment_begin>",
-        `#include <normal_fragment_begin>
-  vec2 lakePos = vLakeWorld.xz;
-  float lakeEps = 0.06;
-  float lakeH0 = lakeWave(lakePos);
-  float lakeDx = (lakeWave(lakePos + vec2(lakeEps, 0.0)) - lakeH0) / lakeEps;
-  float lakeDz = (lakeWave(lakePos + vec2(0.0, lakeEps)) - lakeH0) / lakeEps;
-  vec3 lakeNormal = normalize(vec3(-lakeDx * 0.1, 1.0, -lakeDz * 0.1));
-  normal = normalize((viewMatrix * vec4(lakeNormal, 0.0)).xyz);
-  geometryNormal = normal;`
-      )
-      .replace(
-        "#include <color_fragment>",
-        `#include <color_fragment>
-  float lakeR = clamp(length(lakeLocal(vLakeWorld.xz)), 0.0, 1.0);
-  float lakeShore = smoothstep(0.7, 1.0, lakeR);
-  vec3 lakeTint = mix(uDeep, uShallow, lakeShore);
-  diffuseColor.rgb = lakeTint;
-  diffuseColor.a *= mix(0.94, 0.74, smoothstep(0.78, 1.0, lakeR));`
-      )
-      .replace(
-        "#include <emissivemap_fragment>",
-        `#include <emissivemap_fragment>
-  float lakeFresnel = pow(1.0 - clamp(dot(normalize(vViewPosition), normal), 0.0, 1.0), 4.0);
-  totalEmissiveRadiance += uSky * lakeFresnel * 0.2;`
-      );
-
-    waterMaterial.userData.shader = shader;
-  };
-
-  const water = new THREE.Mesh(new THREE.CircleGeometry(1, 112), waterMaterial);
+  const water = new THREE.Mesh(
+    new THREE.CircleGeometry(1, 90),
+    new THREE.MeshPhysicalMaterial({
+      color: 0x081a1e,
+      metalness: 0.62,
+      roughness: 0.1,
+      clearcoat: 0.85,
+      clearcoatRoughness: 0.1
+    })
+  );
   water.rotation.x = -Math.PI / 2;
-  water.scale.set(LAKE.rx * 1.05, LAKE.rz * 1.05, 1);
-  water.position.y = LAKE_WATER_Y;
-  water.renderOrder = 2;
+  water.scale.set(LAKE.rx * 0.97, LAKE.rz * 0.97, 1);
+  water.position.y = -0.125;
   group.add(water);
+
+  // 近岸加深：水与草之间留一道暗边，避免像一只塑料盆
+  [
+    [0.88, 0.975, 0.36],
+    [0.74, 0.88, 0.16]
+  ].forEach(([inner, outer, opacity]) => {
+    const shade = new THREE.Mesh(
+      new THREE.RingGeometry(inner, outer, 80),
+      new THREE.MeshBasicMaterial({ color: 0x02090b, transparent: true, opacity, depthWrite: false })
+    );
+    shade.rotation.x = -Math.PI / 2;
+    shade.scale.set(LAKE.rx * 0.97, LAKE.rz * 0.97, 1);
+    shade.position.y = -0.122;
+    group.add(shade);
+  });
 
   // 岸边石块：半埋，大小不一
   const rockMat = standardMaterial(0x212319, 0.12, 0.9);
@@ -4321,6 +4533,28 @@ function buildCoasterRefined() {
     new THREE.Vector3(-5.1, 1.0, -3.25)
   ];
   const curve = new THREE.CatmullRomCurve3(controlPoints, true, "catmullrom", 0.2);
+  const supportTrackSamples = [];
+  for (let index = 0; index <= 560; index += 1) {
+    const t = index / 560;
+    supportTrackSamples.push({ t, point: curve.getPointAt(t) });
+  }
+
+  // 支柱必须避开轨道在下方形成的另一段线路，否则竖杆会从钢轨中间穿过。
+  const rodClipsTrack = (start, end, supportT) => {
+    const steps = Math.max(6, Math.ceil(start.distanceTo(end) / 0.08));
+    const clearanceSquared = 0.34 ** 2;
+    for (let step = 0; step <= steps; step += 1) {
+      const point = start.clone().lerp(end, step / steps);
+      if (point.y < 0.2) continue;
+      for (const sample of supportTrackSamples) {
+        let tDistance = Math.abs(sample.t - supportT);
+        tDistance = Math.min(tDistance, 1 - tDistance);
+        if (tDistance < 0.03) continue;
+        if (point.distanceToSquared(sample.point) < clearanceSquared) return true;
+      }
+    }
+    return false;
+  };
 
   const railCurves = [-0.19, 0.19].map((offset) => {
     const points = [];
@@ -4379,23 +4613,21 @@ function buildCoasterRefined() {
     if (point.y < 1.05) continue;
     // 站台体内不立杆：否则柱子会从月台中间穿出来
     if (point.x > stationLeft && point.x < stationRight && point.z > stationNear && point.z < stationFar) continue;
+    const supportT = index / 28;
+    const foot = new THREE.Vector3(point.x, 0, point.z);
+    const top = new THREE.Vector3(point.x, point.y, point.z);
+    // 跨越另一层轨道的位置不立直杆，留给相邻支柱承担结构支撑。
+    if (rodClipsTrack(foot, top, supportT)) continue;
     supportPoints.push(point);
-    rodBetween(group, new THREE.Vector3(point.x, 0, point.z), new THREE.Vector3(point.x, point.y, point.z), 0.045, supportMaterial);
+    rodBetween(group, foot, top, 0.045, supportMaterial);
     if (point.y > 3.8) {
-      rodBetween(
-        group,
-        new THREE.Vector3(point.x - 0.48, 0, point.z),
-        new THREE.Vector3(point.x, point.y * 0.78, point.z),
-        0.032,
-        supportMaterial
-      );
-      rodBetween(
-        group,
-        new THREE.Vector3(point.x + 0.48, 0, point.z),
-        new THREE.Vector3(point.x, point.y * 0.78, point.z),
-        0.032,
-        supportMaterial
-      );
+      [-0.48, 0.48].forEach((offset) => {
+        const braceFoot = new THREE.Vector3(point.x + offset, 0, point.z);
+        const braceTop = new THREE.Vector3(point.x, point.y * 0.78, point.z);
+        if (!rodClipsTrack(braceFoot, braceTop, supportT)) {
+          rodBetween(group, braceFoot, braceTop, 0.032, supportMaterial);
+        }
+      });
     }
   }
 
@@ -6486,8 +6718,6 @@ function animateWorlds() {
 
   if (overviewWorld) {
     updateRain(overviewWorld, delta);
-    const lakeWater = overviewWorld.scene.userData.lakeWater;
-    if (lakeWater) lakeWater.uTime.value = modelTime;
     Object.values(overviewWorld.rides).forEach((ride) => ride.update(modelTime));
     overviewWorld.renderer.render(overviewWorld.scene, overviewWorld.camera);
     positionMapMarkers();

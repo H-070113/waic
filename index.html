@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#071a1d">
   <meta name="description" content="心之所向——一座可以从上帝视角漫游并写下简述的私人游乐园。">
   <title>心 · 夜游</title>
-  <link rel="stylesheet" href="styles.css?v=20261101-05">
+  <link rel="stylesheet" href="styles.css?v=20261101-04">
 </head>
 <body>
   <div class="app-shell" id="appShell">
@@ -270,9 +270,7 @@
                 <p class="photo-kicker">MEMORY ALBUM</p>
                 <h3>相册</h3>
               </div>
-              <div class="photo-panel-actions">
-                <button type="button" class="photo-admin-entry" id="photoWallToggle">全部</button>
-              </div>
+              <button type="button" class="photo-admin-entry" id="photoAdminEntry">管理</button>
             </div>
             <form class="photo-search" id="photoSearchForm">
               <label class="sr-only" for="photoSearchInput">输入照片名字</label>
@@ -285,6 +283,7 @@
               >
               <button type="submit">查找</button>
             </form>
+            <p class="photo-storage" id="photoStorage"></p>
             <p class="photo-message" id="photoMessage" aria-live="polite"></p>
             <figure class="photo-result" id="photoResult" hidden>
               <img id="photoResultImage" alt="">
@@ -293,14 +292,6 @@
                 <span id="photoResultDate"></span>
               </figcaption>
             </figure>
-
-            <section class="photo-wall" id="photoWall" hidden aria-label="全部照片">
-              <div class="photo-wall-head">
-                <span class="photo-wall-count" id="photoWallCount"></span>
-                <button type="button" class="photo-ghost-button" id="photoWallLock">收起</button>
-              </div>
-              <div class="photo-grid" id="photoGrid"></div>
-            </section>
           </section>
 
           <form id="briefForm">
@@ -382,17 +373,49 @@
   <dialog class="overlay-dialog photo-admin-dialog" id="photoAdminDialog" aria-labelledby="photoAdminTitle">
     <div class="dialog-panel">
       <button type="button" class="dialog-close" data-close-dialog aria-label="关闭">×</button>
-      <p class="dialog-kicker">ALBUM</p>
-      <h2 id="photoAdminTitle">查看全部照片</h2>
+      <p class="dialog-kicker">ALBUM ADMIN</p>
+      <h2 id="photoAdminTitle">相册管理</h2>
 
       <div id="photoGate">
-        <p class="dialog-subtitle">输入管理员密码，才能一次看完所有照片。</p>
+        <p class="dialog-subtitle">输入管理员密码，才能查看和整理所有照片。</p>
         <form class="photo-pass-form" id="photoGateForm">
           <label class="sr-only" for="photoPassInput">管理员密码</label>
           <input class="text-input" id="photoPassInput" type="password" inputmode="numeric" autocomplete="off" placeholder="管理员密码">
           <button type="submit">进入</button>
         </form>
         <p class="photo-message" id="photoGateMessage" aria-live="polite"></p>
+      </div>
+
+      <div id="photoAdminBody" hidden>
+        <form class="photo-upload" id="photoUploadForm">
+          <div class="photo-field">
+            <label class="field-label" for="photoNameInput">照片名字</label>
+            <input class="text-input" id="photoNameInput" type="text" maxlength="40" autocomplete="off" placeholder="以后用这个名字搜索，例如：第一次坐木马">
+          </div>
+          <div class="photo-field">
+            <label class="field-label" for="photoFileInput">选择图片</label>
+            <input class="photo-file-input" id="photoFileInput" type="file" accept="image/*">
+          </div>
+          <p class="photo-message" id="photoUploadMessage" aria-live="polite"></p>
+          <button type="submit" class="save-button">
+            <span>保存这张照片</span>
+            <span aria-hidden="true">＋</span>
+          </button>
+        </form>
+
+        <div class="photo-list" id="photoList" aria-live="polite"></div>
+
+        <form class="photo-pass-form" id="photoPassForm" hidden>
+          <input class="text-input" id="photoOldPass" type="password" autocomplete="off" placeholder="当前密码">
+          <input class="text-input" id="photoNewPass" type="password" autocomplete="off" placeholder="新密码（4–20 位）">
+          <button type="submit">保存新密码</button>
+        </form>
+        <p class="photo-message" id="photoPassMessage" aria-live="polite"></p>
+
+        <div class="photo-admin-foot">
+          <button type="button" class="photo-ghost-button" id="photoChangePassButton">修改密码</button>
+          <button type="button" class="photo-ghost-button" id="photoLockButton">退出管理</button>
+        </div>
       </div>
     </div>
   </dialog>
@@ -487,7 +510,6 @@
   <script src="assets/vendor/three.min.js"></script>
   <script src="assets/vendor/GLTFLoader.js"></script>
   <script src="assets/music/playlist.js?v=20261029-11"></script>
-  <script src="album-data.js?v=20261101-11"></script>
-  <script src="app.js?v=20261101-11"></script>
+  <script src="app.js?v=20261105-1"></script>
 </body>
 </html>
